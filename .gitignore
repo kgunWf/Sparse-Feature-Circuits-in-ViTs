@@ -1,0 +1,51 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# ── Environments ──────────────────────────────────────────────
+.env
+.venv
+env/
+venv/
+
+# ── Jupyter ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Generated outputs (never commit these) ────────────────────
+outputs/figures/*
+outputs/caches/*
+outputs/circuits/*
+!outputs/figures/.gitkeep
+!outputs/caches/.gitkeep
+!outputs/circuits/.gitkeep
+
+# ── Data ──────────────────────────────────────────────────────
+data/imagenet_val/
+data/*.tar
+data/*.zip
+data/*.h5
+data/*.hdf5
+!data/README.md
+!data/.gitkeep
+
+# ── OS / IDE ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ── Model weights ─────────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# ── Experiment tracking ───────────────────────────────────────
+wandb/
+runs/

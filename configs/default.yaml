@@ -1,0 +1,53 @@
+# ============================================================
+# P3 — Central configuration
+# ALL hyperparameters live here. Never hardcode values in
+# notebooks or src/ modules. Import via src/config.py.
+# ============================================================
+
+# --- Model ---
+model:
+  name: "facebook/dinov2-vitb14-reg"   # DINOv2 ViT-B/14 with register tokens
+  image_size: 224
+  patch_size: 14
+  num_registers: 4
+
+# --- SAE ---
+sae:
+  source: "prisma"                      # load from Prisma model zoo
+  target_layers: [6, 9, 11]            # residual stream layers to analyse
+  primary_layer: 11                     # used for initial experiments
+  l0_target: 50                         # max active features per token
+  dead_feature_threshold: 0.01         # feature is dead if active < 1% of time
+
+# --- Dataset ---
+data:
+  imagenet_val_path: "data/imagenet_val"
+  cache_size: 5000
+  behavior_class_a: "flamingo"          # ImageNet synset: n02007558
+  behavior_class_b: "spoonbill"         # ImageNet synset: n02006656
+  behavior_n_images: 200                # images per class for circuit analysis
+
+# --- Features ---
+features:
+  top_k_patches: 20                     # top activating patches per SAE feature
+  clip_model: "openai/clip-vit-b32"
+  monosemanticity_top_n: 50            # features to manually inspect per layer
+
+# --- Causal analysis ---
+causal:
+  logit_diff_batch_size: 32
+  importance_percentile: 80            # keep features above this ablation effect
+  min_circuit_nodes: 5
+
+# --- Circuit ---
+circuit:
+  edge_effect_percentile: 80           # top % of pairwise effects kept as edges
+  layer_pairs: [[6, 9], [9, 11]]       # layer pairs for edge measurement
+  faithfulness_target: 0.70            # circuit should explain >= 70% of logit diff
+
+# --- Outputs ---
+outputs:
+  cache_path: "outputs/caches/activations.h5"
+  circuit_path: "outputs/circuits/circuit.json"
+  figures_path: "outputs/figures"
+  report_figures_path: "report/figures"
