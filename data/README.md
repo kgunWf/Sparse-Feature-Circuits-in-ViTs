@@ -1,27 +1,31 @@
 # Data
 
-Not tracked by git. Each team member sets this up locally.
+This directory is NOT tracked by git. Do not commit datasets.
 
-## ImageNet validation set
+## Setup
 
-We use 5,000 images from ImageNet-1k val for the activation cache,
-and 400 images (200 flamingo + 200 spoonbill) for circuit analysis.
-
-### Download via HuggingFace (recommended for Colab)
-
-```python
-from datasets import load_dataset
-ds = load_dataset("imagenet-1k", split="validation", streaming=True)
-```
-
-### Manual download
-
-Register at https://image-net.org/download.php, download
-`ILSVRC2012_img_val.tar` (~6.3 GB) and extract to `data/imagenet_val/`:
+Download the ImageNet 2012 validation split and place it here:
 
 ```
-data/imagenet_val/
-├── n02007558/   # flamingo  (class index 130)
-├── n02006656/   # spoonbill (class index 129)
-└── ...
+data/
+└── imagenet_val/
+    ├── n02007558/     # flamingo (200 images minimum)
+    ├── n02006656/     # spoonbill (200 images minimum)
+    └── ...            # other classes for the 5,000-image cache
 ```
+
+Update `data.imagenet_val_path` in `configs/default.yaml` if you
+place the folder elsewhere.
+
+## ImageNet class IDs
+
+| Class      | Synset ID  |
+|------------|------------|
+| flamingo   | n02007558  |
+| spoonbill  | n02006656  |
+
+## Download
+
+ImageNet requires registration at https://image-net.org.
+On Colab, mount your Google Drive and point the config path there.
+Do not re-download per session — store once in a shared Drive folder.
