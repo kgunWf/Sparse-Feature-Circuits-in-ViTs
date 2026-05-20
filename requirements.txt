@@ -7,10 +7,12 @@ Pillow>=10.0.0
 # ── Config ────────────────────────────────────────────────────
 pyyaml>=6.0
 
-# ── Prisma (HookedViT + pre-trained SAEs) ────────────────────
-# Install from source: https://github.com/PrismaResearch/prisma
-# pip install git+https://github.com/PrismaResearch/prisma.git
-prisma-interp
+# ── Prisma (HookedViT + pre-trained SAEs) ─────────────────────
+# Install from source — pin to a specific commit for reproducibility.
+# Replace <commit-hash> with the hash current when you set up the project.
+# Find latest commit at: github.com/Prisma-Multimodal/ViT-Prisma/commits/main
+# Example: git+https://github.com/Prisma-Multimodal/ViT-Prisma.git@a1b2c3d
+git+https://github.com/Prisma-Multimodal/ViT-Prisma.git
 
 # ── CLIP (for automated concept labeling in features.py) ──────
 transformers>=4.40.0

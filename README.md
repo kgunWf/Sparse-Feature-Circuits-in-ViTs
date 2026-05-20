@@ -7,7 +7,9 @@ Teachers: Gabriele Ciravegna, Eliana Pastor
 
 ## Research direction
 
-We extend the sparse feature circuits approach of Marks et al. (2024) — originally demonstrated for LLMs — to Vision Transformers. Instead of building circuits at the attention-head/MLP level, we build them at the SAE feature level: nodes are interpretable visual concepts recovered by a Sparse Autoencoder, edges are measured causal connections between those concepts across layers.
+We build spatially-resolved sparse feature circuits for a contrastive visual discrimination behavior in DINOv2. Nodes in the circuit are interpretable SAE concepts; edges are measured causal connections between those concepts across layers. Unlike token-aggregated prior work (Kim et al., RRM, NeurIPS 2025), our circuits preserve patch-level spatial resolution throughout — enabling spatial attribution of each circuit node to specific image regions, and CaFE-style validation that circuit features are causally grounded at the right spatial location.
+
+Sparse feature circuits were originally demonstrated for LLMs (Marks et al., 2024). RRM extended a token-aggregated variant to ViTs for single-class recognition. Our contribution is the first spatially-resolved sparse feature circuit for a **contrastive two-class behavior** in **DINOv2 with register tokens**.
 
 **Model:** DINOv2 ViT-B/14 with register tokens (Darcet et al., ICLR 2024)
 **Behavior under study:** flamingo vs. spoonbill classification
@@ -96,6 +98,7 @@ contain loops, model loading, or metric computation directly.
 ## Key references
 
 - Marks et al. (2024). Sparse Feature Circuits. arXiv:2403.19647
+- Kim et al. (2025). Interpreting ViTs via Residual Replacement Model. arXiv:2509.17401 — closest prior work; token-aggregated
 - Joseph et al. (2025). Prisma. arXiv:2504.19475
 - Pach et al. (2025). Sparse Autoencoders Learn Monosemantic Features in VLMs. NeurIPS 2025
 - Żukowska et al. (2026). Seeing Through Circuits. arXiv:2604.14477
