@@ -7,6 +7,25 @@ Commit updates regularly so the team can follow your progress.
 
 ### Decisions
 
+- **SAE implementation: all 6 primitives in `src/sae.py`.**
+  `get_sae()`, `encode()`, `decode()`, `ablate_feature()`, `get_l0_sparsity()`,
+  `get_reconstruction_loss()`. One SAE per layer, cached in `_sae_cache` on first call.
+  Checkpoint path convention: `outputs/saes/layer_{N}/sae_weights.pt` + `outputs/saes/layer_{N}/cfg.json`.
+  Both paths derived from `_DEFAULT_CONFIG.parent.parent` (repo root anchor) — no hardcoded paths.
+
+- **Used `SparseAutoencoder.load_from_pretrained()` to load checkpoints.**
+  `SparseAutoencoder` itself is abstract; `load_from_pretrained()` instantiates the correct
+  concrete subclass (`StandardSparseAutoencoder`) from the saved config. Passing
+  `config_path=None` falls back to defaults if `cfg.json` is absent.
+
+- **`sae.encode(x)` returns a tuple `(sae_in, feature_acts)` — only `feature_acts` is used.**
+  `sae_in` is the pre-activation input (x − b_dec); `feature_acts` is the post-ReLU output.
+  This is the vit_prisma SAE API. Documented in `src/sae.py:119`.
+
+- **`ablate_feature` clones features before zeroing.**
+  `features[..., feature_idx] = 0.0` is in-place; clone prevents mutating the encoded
+  tensor and avoids downstream aliasing bugs.
+
 - **Switched model from `facebook/dinov2-vitb14-reg` to `facebook/dino-vitb16`.**
   DINOv2 is not registered in the installed vit_prisma (v2.0.0). No config, no weight
   converter, no SAE support. DINO v1 ViT-B/16 is the closest supported model.
@@ -52,6 +71,15 @@ Commit updates regularly so the team can follow your progress.
   (patch16, no registers, 197 tokens) as a stand-in. Pre-trained SAE availability for
   DINO v1 layers 6, 9, 11 needs to be confirmed before Week 2.
   → Raise with the group: do we patch vit_prisma for DINOv2, or continue with DINO v1?
+
+- **Pre-trained SAE weights for `facebook/dino-vitb16` not yet located.**
+  `get_sae()` will raise `FileNotFoundError` until weights are placed at
+  `outputs/saes/layer_{N}/sae_weights.pt`. Notebook cells c03, c05, c06 (SAE load,
+  L0 sparsity, reconstruction loss) are blocked on this. Logic was validated with
+  synthetic random weights: L0≈1532/3072 (half of d_sae, expected for untrained ReLU),
+  reconstruction loss≈1.5 (expected for random decoder). Real targets (L0 < 50,
+  loss < 0.05) are only meaningful with pre-trained weights.
+  → Find vit_prisma-compatible SAE checkpoints for DINO v1 ViT-B/16 layers 6, 9, 11.
 
 ---
 
