@@ -1,5 +1,7 @@
 # P3 — Mechanistic Interpretability of Vision Transformers
+
 ### Sparse Feature Circuits in ViTs: From SAE Concept Discovery to Causal Graph
+
 **Explainable and Trustworthy AI — Politecnico di Torino 2025/2026**
 Teachers: Gabriele Ciravegna, Eliana Pastor
 
@@ -11,9 +13,11 @@ We build spatially-resolved sparse feature circuits for a contrastive visual dis
 
 Sparse feature circuits were originally demonstrated for LLMs (Marks et al., 2024). RRM extended a token-aggregated variant to ViTs for single-class recognition. Our contribution is the first spatially-resolved sparse feature circuit for a **contrastive two-class behavior** in **DINOv2 with register tokens**.
 
-**Model:** DINOv2 ViT-B/14 with register tokens (Darcet et al., ICLR 2024)
+**Target model:** DINOv2 ViT-B/14 with register tokens (Darcet et al., ICLR 2024)
+**Current model:** `facebook/dino-vitb16` (DINO v1 ViT-B/16) — stand-in while vit_prisma
+DINOv2 support is unresolved. See `report/notes/person_a_notes.md`.
 **Behavior under study:** flamingo vs. spoonbill classification
-**Tooling:** Prisma (Joseph et al., CVPR 2025)
+**Tooling:** Prisma / vit_prisma (Joseph et al., CVPR 2025)
 
 **Fallback:** If circuit construction is intractable within the timeline, the SAE analysis (Stages 1–2) constitutes a standalone deliverable: monosemanticity scores, CLIP-based concept labeling, and a CaFE-style causal sanity check on DINOv2.
 
@@ -53,7 +57,7 @@ configs/default.yaml        All hyperparameters — never hardcode values elsewh
 data/                       ImageNet val split — NOT tracked by git (see data/README.md)
 src/
   config.py                 YAML loader — everyone imports get_config() from here
-  model.py                  DINOv2 + HookedViT loading          [Person A]
+  model.py                  DINO + HookedViT loading (patched)  [Person A]
   sae.py                    SAE loading + encode/decode/ablate   [Person A]
   cache.py                  HDF5 activation cache build + read   [Person C]
   features.py               Top patches, CLIP labeling, MS score [Person B]
@@ -78,10 +82,31 @@ report/notes/               Running notes per person             [tracked]
 ```bash
 git clone <repo-url>
 cd p3-vit-mech-interp
+conda create --name vit_mech python=3.10
+conda activate vit_mech
 pip install -r requirements.txt
+pip install -e .          # makes `from src.x import ...` work in notebooks
+python -m ipykernel install --user --name vit_mech --display-name "Python (vit_mech)"
 ```
 
-Download ImageNet val and update `data/imagenet_val_path` in `configs/default.yaml`.
+In VS Code / Jupyter, select the **Python (vit_mech)** kernel before running any notebook.
+
+Download a small test set (flamingo + spoonbill, 5 images each):
+
+```bash
+python data/load_data.py
+```
+
+For the full pipeline, download ImageNet val and update `data/imagenet_val_path` in
+`configs/default.yaml`.
+
+### Known issue — model
+
+vit_prisma v2.0.0 does not support `facebook/dinov2-vitb14-reg`. The project currently
+uses `facebook/dino-vitb16` (DINO v1) as a stand-in. `src/model.py` includes a runtime
+patch (`_remap_dino_keys`) to fix a key-name mismatch between the installed vit_prisma
+weight converter and the current HuggingFace transformers release. No manual action
+required — the patch applies automatically on import.
 
 ---
 
