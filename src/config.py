@@ -22,6 +22,20 @@ USAGE
 DEPENDENCIES: pip install pyyaml
 """
 
+from pathlib import Path
+import yaml
+from types import SimpleNamespace
+
+_cache = None
+_DEFAULT_CONFIG = Path(__file__).parent.parent / "configs" / "default.yaml"
 
 def get_config(path=None):
-    raise NotImplementedError("Implement get_config() — see docstring above.")
+    global _cache
+    if _cache is not None:
+        return _cache
+    if path is None:
+        path = _DEFAULT_CONFIG
+    with open(path, "r") as f:
+        config = yaml.safe_load(f)
+    _cache = SimpleNamespace(**{k: SimpleNamespace(**v) if isinstance(v, dict) else v for k, v in config.items()})
+    return _cache
