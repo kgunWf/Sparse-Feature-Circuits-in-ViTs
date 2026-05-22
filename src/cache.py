@@ -8,26 +8,26 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from src.config import get_config
-from src.model import get_model
+from src.config import getconfig
+from src.model import getmodel, preprocessimage
 
 
 HOOK_KEY_TEMPLATE = "blocks.{layer}.hook_resid_post"
 
 
-def _get_cfg():
+def getconfig():
     return get_config()
 
 
 def _resolve_cache_path(cache_path: str | Path | None = None) -> Path:
-    cfg = _get_cfg()
+    cfg = getconfig()
     path = Path(cache_path) if cache_path is not None else Path(cfg.outputs.cache_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _resolve_layers(layers: Iterable[int] | None = None) -> list[int]:
-    cfg = _get_cfg()
+    cfg = getconfig()
     if layers is None:
         return list(cfg.sae.target_layers)
     return [int(layer) for layer in layers]
@@ -46,7 +46,7 @@ def _decode_if_bytes(x: Any):
 def _load_batch_inputs(model, image_paths: list[str]) -> torch.Tensor:
     batch = []
     for image_path in image_paths:
-        x = model.preprocess_image(image_path)
+        x = preprocessimage(image_path)
         if isinstance(x, dict):
             if "pixel_values" in x:
                 x = x["pixel_values"]
@@ -105,7 +105,7 @@ def build_cache(
     if len(image_paths) == 0:
         raise ValueError("image_paths is empty.")
 
-    cfg = _get_cfg()
+    cfg = getconfig()
     output_path = _resolve_cache_path(output_path)
     layers = _resolve_layers(layers)
     n_images = len(image_paths)
