@@ -15,19 +15,18 @@ from src.model import getmodel, preprocessimage
 HOOK_KEY_TEMPLATE = "blocks.{layer}.hook_resid_post"
 
 
-def getconfig():
-    return get_config()
-
+def _get_cfg():
+    return getconfig()
 
 def _resolve_cache_path(cache_path: str | Path | None = None) -> Path:
-    cfg = getconfig()
+    cfg = _get_cfg()
     path = Path(cache_path) if cache_path is not None else Path(cfg.outputs.cache_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _resolve_layers(layers: Iterable[int] | None = None) -> list[int]:
-    cfg = getconfig()
+    cfg = _get_cfg()
     if layers is None:
         return list(cfg.sae.target_layers)
     return [int(layer) for layer in layers]
@@ -105,12 +104,12 @@ def build_cache(
     if len(image_paths) == 0:
         raise ValueError("image_paths is empty.")
 
-    cfg = getconfig()
+    cfg = _get_cfg()
     output_path = _resolve_cache_path(output_path)
     layers = _resolve_layers(layers)
     n_images = len(image_paths)
 
-    model = get_model()
+    model = getmodel()
     model.eval()
 
     seq_len, d_model = _get_probe_shape(model, image_paths[0], layers[0])
