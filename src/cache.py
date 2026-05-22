@@ -8,20 +8,20 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from src.config import getconfig
-from src.model import getmodel, preprocessimage
+from src.config import get_config
+from src.model import get_model, preprocess_image
 
 
 HOOK_KEY_TEMPLATE = "blocks.{layer}.hook_resid_post"
 
 
 def _get_cfg():
-    return getconfig()
+    return get_config()
 
 
 def _resolve_cache_path(cachepath: str | Path | None = None) -> Path:
     cfg = _get_cfg()
-    path = Path(cachepath) if cachepath is not None else Path(cfg.outputs.cachepath)
+    path = Path(cachepath) if cachepath is not None else Path(cfg.outputs.cache_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -29,7 +29,7 @@ def _resolve_cache_path(cachepath: str | Path | None = None) -> Path:
 def _resolve_layers(layers: Iterable[int] | None = None) -> list[int]:
     cfg = _get_cfg()
     if layers is None:
-        return [int(x) for x in cfg.sae.layers]
+        return [int(x) for x in cfg.sae.target_layers]
     return [int(layer) for layer in layers]
 
 
@@ -47,16 +47,16 @@ def _load_batch_inputs(model, imagepaths: list[str]) -> torch.Tensor:
     batch = []
 
     for imagepath in imagepaths:
-        x = preprocessimage(imagepath)
+        x = preprocess_image(imagepath)
 
         if isinstance(x, dict):
             if "pixel_values" in x:
                 x = x["pixel_values"]
             else:
-                raise KeyError("preprocessimage returned a dict without 'pixel_values'.")
+                raise KeyError("preprocess_image returned a dict without 'pixel_values'.")
 
         if not isinstance(x, torch.Tensor):
-            raise TypeError("preprocessimage must return a torch.Tensor or dict with 'pixel_values'.")
+            raise TypeError("preprocess_image must return a torch.Tensor or dict with 'pixel_values'.")
 
         if x.ndim == 4 and x.shape[0] == 1:
             x = x.squeeze(0)
@@ -117,7 +117,7 @@ def build_cache(
     layers = _resolve_layers(layers)
     nimages = len(imagepaths)
 
-    model = getmodel()
+    model = get_model()
     model.eval()
 
     seqlen, dmodel = _get_probe_shape(model, imagepaths[0], layers[0])
@@ -127,7 +127,7 @@ def build_cache(
 
         metadata = f.create_group("metadata")
         metadata.create_dataset("modelname", data=str(cfg.model.name), dtype=strdtype)
-        metadata.create_dataset("imagesize", data=int(cfg.model.imagesize))
+        metadata.create_dataset("imagesize", data=int(cfg.model.image_size))
         metadata.create_dataset("layers", data=np.asarray(layers, dtype=np.int32))
         metadata.create_dataset("nimages", data=int(nimages))
 
