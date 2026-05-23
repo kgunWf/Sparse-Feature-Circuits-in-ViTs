@@ -10,13 +10,40 @@ Commit updates regularly so the team can follow your progress.
 - **SAE implementation: all 6 primitives in `src/sae.py`.**
   `get_sae()`, `encode()`, `decode()`, `ablate_feature()`, `get_l0_sparsity()`,
   `get_reconstruction_loss()`. One SAE per layer, cached in `_sae_cache` on first call.
-  Checkpoint path convention: `outputs/saes/layer_{N}/sae_weights.pt` + `outputs/saes/layer_{N}/cfg.json`.
+  Checkpoint path convention: `outputs/saes/layer_{N}/weights.pt` + `outputs/saes/layer_{N}/config.json`.
   Both paths derived from `_DEFAULT_CONFIG.parent.parent` (repo root anchor) — no hardcoded paths.
+  These filenames match the HuggingFace repo structure exactly; `load_from_pretrained` finds
+  `config.json` automatically from the same directory as the weights.
+
+- **Pre-trained DINO SAEs found on Prisma-Multimodal HuggingFace.**
+  Repos follow the pattern `Prisma-Multimodal/DINO-vanilla-x64-all_patches_{N}-resid_post-{L0}-{var}`.
+  `DINO-vanilla` = trained on DINO v1 activations (correct model match). `x64` = d_sae = 768 × 64 = 49,152.
+  `all_patches` + `resid_post` = hook point matches `blocks.{N}.hook_resid_post` on patch tokens.
+  Target layers updated to [4, 6, 9]; primary layer = 9. Repo IDs stored in `cfg.sae.sae_repos`.
+
+- **Auto-download implemented in `get_sae()` + `utils/download_saes.py`.**
+  `get_sae()` calls `_download_sae(layer)` automatically if `weights.pt` is missing.
+  For large SAE files (288 MB each), prefer the standalone script to download before running
+  notebooks: `python utils/download_saes.py --layers 9` (or `--layers 4 6 9` for all).
+  Uses `vit_prisma.sae.sae_utils.download_sae_from_huggingface` internally (lazy import).
 
 - **Used `SparseAutoencoder.load_from_pretrained()` to load checkpoints.**
   `SparseAutoencoder` itself is abstract; `load_from_pretrained()` instantiates the correct
-  concrete subclass (`StandardSparseAutoencoder`) from the saved config. Passing
-  `config_path=None` falls back to defaults if `cfg.json` is absent.
+  concrete subclass (`StandardSparseAutoencoder`) from the saved config. The `config_path`
+  parameter is ignored for non-legacy checkpoints — it always looks for `config.json` in the
+  same directory as the weights file.
+
+- **Device selection: explicit MPS detection required throughout the pipeline.**
+  `torch.cuda.is_available()` returns False on Apple Silicon; MPS must be checked separately
+  with `torch.backends.mps.is_available()`. Both `get_model()` and `get_sae()` now detect
+  CUDA → MPS → CPU in that priority order.
+  Two additional fixes were needed:
+  1. `load_hooked_model()` with `device="mps"` leaves some parameters on CPU — fixed by
+     calling `_model.to(device)` explicitly after loading in `get_model()`.
+  2. `sae.device` is a plain string attribute not updated by `.to()` — fixed by setting
+     `sae.device = device` after `sae.to(device)` in `get_sae()`.
+  `ablate_feature()` casts its output back to `original_device = activations.device` so it is
+  safe to compare against the input activations regardless of SAE device.
 
 - **`sae.encode(x)` returns a tuple `(sae_in, feature_acts)` — only `feature_acts` is used.**
   `sae_in` is the pre-activation input (x − b_dec); `feature_acts` is the post-ReLU output.
@@ -72,14 +99,13 @@ Commit updates regularly so the team can follow your progress.
   DINO v1 layers 6, 9, 11 needs to be confirmed before Week 2.
   → Raise with the group: do we patch vit_prisma for DINOv2, or continue with DINO v1?
 
-- **Pre-trained SAE weights for `facebook/dino-vitb16` not yet located.**
-  `get_sae()` will raise `FileNotFoundError` until weights are placed at
-  `outputs/saes/layer_{N}/sae_weights.pt`. Notebook cells c03, c05, c06 (SAE load,
-  L0 sparsity, reconstruction loss) are blocked on this. Logic was validated with
-  synthetic random weights: L0≈1532/3072 (half of d_sae, expected for untrained ReLU),
-  reconstruction loss≈1.5 (expected for random decoder). Real targets (L0 < 50,
-  loss < 0.05) are only meaningful with pre-trained weights.
-  → Find vit_prisma-compatible SAE checkpoints for DINO v1 ViT-B/16 layers 6, 9, 11.
+- ~~**Pre-trained SAE weights not yet located.**~~ **RESOLVED.**
+  Pre-trained weights found on Prisma-Multimodal HuggingFace for layers 4, 6, 9.
+  Config updated: `target_layers: [4, 6, 9]`, `primary_layer: 9`.
+  Repo IDs stored in `cfg.sae.sae_repos`; weights auto-downloaded via
+  `python utils/download_saes.py`. Verified: L0=1098.8 (< target 1200),
+  reconstruction loss=0.0097 (< 0.05). All three notebook cells (SAE load, L0,
+  reconstruction) now pass with real weights.
 
 ---
 
