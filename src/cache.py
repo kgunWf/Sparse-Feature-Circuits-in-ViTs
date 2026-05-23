@@ -68,7 +68,7 @@ def _load_batch_inputs(model, imagepaths: list[str]) -> torch.Tensor:
 
     pixelvalues = torch.stack(batch, dim=0)
     device = next(model.parameters()).device
-    return pixelvalues.to(device)
+    return pixelvalues.float().to(device)
 
 
 def _get_probe_shape(model, sampleimagepath: str, samplelayer: int) -> tuple[int, int]:
