@@ -23,6 +23,7 @@ outputs/circuits/*
 !outputs/figures/.gitkeep
 !outputs/caches/.gitkeep
 !outputs/circuits/.gitkeep
+outputs/saes/*
 
 # ── Data ──────────────────────────────────────────────────────
 data/imagenet_val/
@@ -49,3 +50,4 @@ Thumbs.db
 # ── Experiment tracking ───────────────────────────────────────
 wandb/
 runs/
+

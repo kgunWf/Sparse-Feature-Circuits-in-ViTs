@@ -55,20 +55,24 @@ import src.config as _cfg_mod
 _sae_cache: dict[int, SparseAutoencoder] = {}
 
 
+def _sae_dir(layer: int) -> Path:
+    repo_root = _cfg_mod._DEFAULT_CONFIG.parent.parent
+    return repo_root / "outputs" / "saes" / f"layer_{layer}"
+
+
 def _sae_paths(layer: int) -> tuple[Path, Path]:
     """Return (weights_path, config_path) for a given layer."""
-    repo_root = _cfg_mod._DEFAULT_CONFIG.parent.parent
-    sae_dir = repo_root / "outputs" / "saes" / f"layer_{layer}"
-    return sae_dir / "sae_weights.pt", sae_dir / "cfg.json"
+    sae_dir = _sae_dir(layer)
+    # HF repos use weights.pt + config.json; load_from_pretrained finds config.json automatically
+    return sae_dir / "weights.pt", sae_dir / "config.json"
 
 
 def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
     """
     Load and cache the pre-trained SAE for the given layer.
 
-    Expects checkpoint files at:
-        outputs/saes/layer_{N}/sae_weights.pt
-        outputs/saes/layer_{N}/cfg.json
+    Weights must be present at outputs/saes/layer_{N}/weights.pt.
+    If missing, run: python utils/download_saes.py --layers {N}
 
     Returns a vit_prisma SparseAutoencoder in eval mode.
     """
@@ -76,25 +80,27 @@ def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
     if layer is None:
         layer = cfg.sae.primary_layer
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    assert hasattr(cfg.sae, "primary_layer"), "cfg.sae.primary_layer missing"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
     if layer in _sae_cache:
         return _sae_cache[layer]
 
-    weights_path, config_path = _sae_paths(layer)
+    weights_path, _ = _sae_paths(layer)
     if not weights_path.exists():
         raise FileNotFoundError(
-            f"SAE weights not found at {weights_path}.\n"
-            f"Download pre-trained weights and place them at outputs/saes/layer_{{N}}/."
+            f"SAE weights not found at {weights_path}\n"
+            f"Download them first: python utils/download_saes.py --layers {layer}"
         )
 
-    sae = SparseAutoencoder.load_from_pretrained(
-        str(weights_path),
-        config_path=str(config_path) if config_path.exists() else None,
-    )
+    # load_from_pretrained finds config.json in the same directory automatically
+    sae = SparseAutoencoder.load_from_pretrained(str(weights_path))
     sae.to(device)
+    sae.device = device  # sync string attribute so encode/decode move tensors to the right place
     sae.eval()
 
     _sae_cache[layer] = sae
@@ -157,10 +163,11 @@ def ablate_feature(
     Returns:
         modified activations: (batch, seq_len, d_model)
     """
+    original_device = activations.device
     features = encode(activations, layer)
     features = features.clone()          # don't mutate the encoded tensor in-place
     features[..., feature_idx] = 0.0
-    return decode(features, layer)
+    return decode(features, layer).to(original_device)
 
 
 def get_l0_sparsity(activations: torch.Tensor, layer: int = None) -> float:

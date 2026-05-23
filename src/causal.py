@@ -89,10 +89,18 @@ Used by:    notebooks/03_causal_features.ipynb
 """
 
 # TODO (Person A, Week 2 Days 8–10):
-#   1. Understand Prisma hook API for activation patching.
-#   2. Implement compute_feature_importance() — test on 5 features first.
-#   3. Implement get_top_causal_features().
-#   4. Run on layers 6, 9, 11 and save ranked lists to outputs/.
+#   0. Verify model.run_with_hooks() in notebook 01 BEFORE writing any code here.
+#      Hook signature: fwd_hooks=[(hook_name, fn)] where fn(value, hook) -> tensor.
+#   1. Implement compute_feature_importance() with a two-pass approach:
+#      Pass 1 — gradient ranking: one backward pass of logit_diff w.r.t. SAE
+#               feature activations → importance ∝ |grad| × |feature_act|.
+#               This ranks all d_sae features in O(1) backward passes.
+#      Pass 2 — ablation confirmation: run ablate_feature() only on top-K candidates
+#               to get exact importance scores for the final ranking.
+#      Do NOT loop ablate_feature() over all 3072 features — that is 3072 forward
+#      passes per layer and will take ~30 min on CPU.
+#   2. Implement get_top_causal_features().
+#   3. Run on layers 6, 9, 11 and save ranked lists to outputs/.
 #
 # TODO (Person B, Week 2 Days 10–12):
 #   1. Read CaFE paper (arXiv:2509.00749) before implementing.
