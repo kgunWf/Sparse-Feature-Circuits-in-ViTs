@@ -82,7 +82,12 @@ def get_model(model_name=None, device=None):
     if model_name is None:
         model_name = cfg.model.name
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
 
     _model = load_hooked_model(
         model_name,
@@ -91,6 +96,7 @@ def get_model(model_name=None, device=None):
         device=device,
         allow_failing=True
     )
+    _model = _model.to(device)   # load_hooked_model leaves some params on CPU
     n_params = sum(p.numel() for p in _model.parameters())
     print(f"Loaded {model_name} on {device} — {n_params:,} params")
     return _model
