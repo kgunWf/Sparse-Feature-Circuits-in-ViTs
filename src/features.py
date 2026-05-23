@@ -17,14 +17,13 @@ get_top_patches(layer, feature_idx, activations, image_paths,
     activations: torch.Tensor shape (n_images, seq_len, d_model)
                  loaded from cache.load_layer()
     image_paths: corresponding list of image file paths
-    token_type:  "patch"  — exclude CLS and register tokens
+    token_type:  "patch"  — exclude CLS token
                  "cls"    — CLS token only
                  "all"    — all tokens
 
-    Token layout for DINOv2-reg4:
+    Token layout for DINO v1 ViT-B/16 (seq_len=197, no registers):
         index 0          = CLS token
-        index 1..196     = patch tokens  (224px image, 14px patches)
-        index 197..200   = register tokens
+        index 1..196     = patch tokens  (224px image, 16px patches → 14×14 grid)
 
     Each returned dict should contain:
         image_path, image_idx, token_idx,
@@ -91,7 +90,7 @@ Used by:    notebooks/02_feature_analysis.ipynb,
 #
 #   Week 2:
 #   4. Implement compute_monosemanticity_score() per Pach et al.
-#   5. Run on all features at layer 11; produce score distribution.
+#   5. Run on all features at layer 9 (primary); produce score distribution.
 #   6. Inspect top 50 features manually; annotate with categories
 #      (texture/color/part/scene/semantic/unclear) and save to
-#      report/notes/feature_catalog_layer11.md
+#      report/notes/feature_catalog_layer9.md
