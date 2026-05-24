@@ -15,6 +15,30 @@
 
 ### Blockers
 <!-- Depends on Person A finishing model.py (need get_model and run_with_cache) -->
+### Cache Update
+
+Implemented `src/cache.py` on branch `dev-person-c`.
+
+Confirmed cache schema:
+- `/metadata`: model_name, image_size, layers, n_images
+- `/images`: paths, labels, class_ids
+- `/activations/layer_{L}`: float32, shape `(n_images, seq_len, d_model)`
+
+Confirmed hook key format:
+- `blocks.{L}.hook_resid_post`
+
+Current team setup:
+- model: `facebook/dino-vitb16`
+- image size: 224
+- target layers: `[6, 9, 11]`
+- observed activation shape per image: `(197, 768)`
+
+Implemented:
+- `build_cache(...)`
+- `load_layer(...)`
+- `load_metadata(...)`
+- `load_image_index(...)`
+- `get_class_indices(...)`
 
 ---
 

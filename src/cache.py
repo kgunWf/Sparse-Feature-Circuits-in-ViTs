@@ -1,86 +1,244 @@
-"""
-cache.py  [Owner: Person C — Week 1]
----------
-Build and read the HDF5 activation cache.
+from __future__ import annotations
 
-IMPORTANT: Agree on and freeze the HDF5 schema (see below) before
-Person A or Person B write any code that reads activations. The
-schema is the contract between cache.py and every other module.
+from pathlib import Path
+from typing import Any, Iterable
 
-HDF5 Schema
------------
-The cache file lives at cfg.outputs.cache_path and has this layout:
+import h5py
+import numpy as np
+import torch
+from tqdm.auto import tqdm
 
-    /metadata
-        model_name      str     e.g. "facebook/dinov2-vitb14-reg"
-        image_size      int     e.g. 224
-        layers          int[]   e.g. [6, 9, 11]
-        n_images        int
+from src.config import get_config
+from src.model import get_model, preprocess_image
 
-    /images
-        paths           str[]   absolute paths to source images
-        labels          str[]   ImageNet class name per image
-        class_ids       int[]   ImageNet class index per image
 
-    /activations
-        layer_{L}       float32  shape (n_images, seq_len, d_model)
-                        seq_len = (image_size/patch_size)^2
-                                  + n_registers + 1  (for CLS token)
+HOOK_KEY_TEMPLATE = "blocks.{layer}.hook_resid_post"
 
-Public API (implement these)
------------------------------
-build_cache(image_paths, labels, class_ids,
-            output_path=None, layers=None, batch_size=32) -> str
+
+def _get_cfg():
+    return get_config()
+
+
+def _resolve_cache_path(cachepath: str | Path | None = None) -> Path:
+    cfg = _get_cfg()
+    path = Path(cachepath) if cachepath is not None else Path(cfg.outputs.cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _resolve_layers(layers: Iterable[int] | None = None) -> list[int]:
+    cfg = _get_cfg()
+    if layers is None:
+        return [int(x) for x in cfg.sae.target_layers]
+    return [int(layer) for layer in layers]
+
+
+def _string_dtype():
+    return h5py.string_dtype(encoding="utf-8")
+
+
+def _decode_if_bytes(x: Any):
+    if isinstance(x, bytes):
+        return x.decode("utf-8")
+    return x
+
+
+def _load_batch_inputs(model, imagepaths: list[str]) -> torch.Tensor:
+    batch = []
+
+    for imagepath in imagepaths:
+        x = preprocess_image(imagepath)
+
+        if isinstance(x, dict):
+            if "pixel_values" in x:
+                x = x["pixel_values"]
+            else:
+                raise KeyError("preprocess_image returned a dict without 'pixel_values'.")
+
+        if not isinstance(x, torch.Tensor):
+            raise TypeError("preprocess_image must return a torch.Tensor or dict with 'pixel_values'.")
+
+        if x.ndim == 4 and x.shape[0] == 1:
+            x = x.squeeze(0)
+
+        if x.ndim != 3:
+            raise ValueError(f"Expected preprocessed image shape (C, H, W), got {tuple(x.shape)}")
+
+        batch.append(x)
+
+    pixelvalues = torch.stack(batch, dim=0)
+    device = next(model.parameters()).device
+    return pixelvalues.float().to(device)
+
+
+def _get_probe_shape(model, sampleimagepath: str, samplelayer: int) -> tuple[int, int]:
+    pixelvalues = _load_batch_inputs(model, [sampleimagepath])
+
+    with torch.no_grad():
+        _, cache = model.run_with_cache(pixelvalues)
+
+    key = HOOK_KEY_TEMPLATE.format(layer=samplelayer)
+    if key not in cache:
+        residkeys = [k for k in cache.keys() if "resid" in k]
+        raise KeyError(
+            f"Hook key '{key}' not found in activation cache. "
+            f"Available residual keys include: {residkeys[:20]}"
+        )
+
+    acts = cache[key]
+    if acts.ndim != 3:
+        raise ValueError(f"Expected activation shape (batch, seq_len, d_model), got {tuple(acts.shape)}")
+
+    _, seqlen, dmodel = acts.shape
+    return int(seqlen), int(dmodel)
+
+
+def build_cache(
+    imagepaths,
+    labels,
+    classids,
+    outputpath=None,
+    layers=None,
+    batchsize: int = 32,
+) -> str:
+    """
     Run DINOv2 on all images and save residual stream activations
     for the target layers to an HDF5 file.
 
-    Steps:
-        1. Create the HDF5 file with pre-allocated datasets
-           (use h5py chunked storage for efficient slice access).
-        2. Process images in batches — call model.run_with_cache()
-           and write each batch to disk immediately to avoid OOM.
-        3. Store metadata and image index.
-    Returns the path to the created file.
+    Returns the path to the created cache file.
+    """
+    if not (len(imagepaths) == len(labels) == len(classids)):
+        raise ValueError("imagepaths, labels, and classids must have the same length.")
+    if len(imagepaths) == 0:
+        raise ValueError("imagepaths is empty.")
 
-load_layer(layer, indices=None, cache_path=None) -> torch.Tensor
+    cfg = _get_cfg()
+    outputpath = _resolve_cache_path(outputpath)
+    layers = _resolve_layers(layers)
+    nimages = len(imagepaths)
+
+    model = get_model()
+    model.eval()
+
+    seqlen, dmodel = _get_probe_shape(model, imagepaths[0], layers[0])
+
+    with h5py.File(outputpath, "w") as f:
+        strdtype = _string_dtype()
+
+        metadata = f.create_group("metadata")
+        metadata.create_dataset("modelname", data=str(cfg.model.name), dtype=strdtype)
+        metadata.create_dataset("imagesize", data=int(cfg.model.image_size))
+        metadata.create_dataset("layers", data=np.asarray(layers, dtype=np.int32))
+        metadata.create_dataset("nimages", data=int(nimages))
+
+        imagesgroup = f.create_group("images")
+        imagesgroup.create_dataset("paths", data=np.asarray(list(imagepaths), dtype=object), dtype=strdtype)
+        imagesgroup.create_dataset("labels", data=np.asarray(list(labels), dtype=object), dtype=strdtype)
+        imagesgroup.create_dataset("classids", data=np.asarray(list(classids), dtype=np.int32))
+
+        activations = f.create_group("activations")
+        for layer in layers:
+            activations.create_dataset(
+                f"layer_{layer}",
+                shape=(nimages, seqlen, dmodel),
+                dtype=np.float32,
+                chunks=(min(batchsize, nimages), seqlen, dmodel),
+                compression="gzip",
+            )
+
+        for start in tqdm(range(0, nimages, batchsize), desc="Building activation cache"):
+            end = min(start + batchsize, nimages)
+            batchpaths = list(imagepaths[start:end])
+
+            pixelvalues = _load_batch_inputs(model, batchpaths)
+
+            with torch.no_grad():
+                _, cache = model.run_with_cache(pixelvalues)
+
+            for layer in layers:
+                key = HOOK_KEY_TEMPLATE.format(layer=layer)
+                if key not in cache:
+                    residkeys = [k for k in cache.keys() if "resid" in k]
+                    raise KeyError(
+                        f"Hook key '{key}' not found in activation cache. "
+                        f"Available residual keys include: {residkeys[:20]}"
+                    )
+
+                acts = cache[key].detach().to(torch.float32).cpu().numpy()
+                activations[f"layer_{layer}"][start:end] = acts
+
+            del pixelvalues
+            del cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    return str(outputpath)
+
+
+def load_layer(layer: int, indices=None, cachepath=None) -> torch.Tensor:
+    """
     Load activations for a given layer.
-    indices: optional list of row indices (load a subset).
+
     Returns shape (n, seq_len, d_model), float32 torch.Tensor.
-    NOTE: h5py requires sorted indices for fancy indexing.
+    """
+    cachepath = _resolve_cache_path(cachepath)
 
-load_metadata(cache_path=None) -> dict
+    with h5py.File(cachepath, "r") as f:
+        dataset = f["activations"][f"layer_{int(layer)}"]
+
+        if indices is None:
+            array = dataset[:]
+        else:
+            indices = list(indices)
+            if len(indices) == 0:
+                shape = (0,) + dataset.shape[1:]
+                return torch.empty(shape, dtype=torch.float32)
+
+            sortedpositions = np.argsort(indices)
+            sortedindices = np.asarray(indices, dtype=np.int64)[sortedpositions]
+            sortedarray = dataset[sortedindices]
+
+            inverse = np.argsort(sortedpositions)
+            array = sortedarray[inverse]
+
+    return torch.from_numpy(np.asarray(array, dtype=np.float32))
+
+
+def load_metadata(cachepath=None) -> dict:
+    """
     Return the metadata group as a plain dict.
+    """
+    cachepath = _resolve_cache_path(cachepath)
 
-load_image_index(cache_path=None) -> dict
-    Return {"paths": str[], "labels": str[], "class_ids": int[]}
+    with h5py.File(cachepath, "r") as f:
+        meta = f["metadata"]
+        return {
+            "modelname": _decode_if_bytes(meta["modelname"][()]),
+            "imagesize": int(meta["imagesize"][()]),
+            "layers": [int(x) for x in meta["layers"][:]],
+            "nimages": int(meta["nimages"][()]),
+        }
 
-get_class_indices(class_name, cache_path=None) -> list[int]
-    Return cache row indices for all images of a given class.
-    Used by causal.py to load only flamingo or spoonbill activations.
 
-Implementation notes
---------------------
-- Use h5py chunked datasets — chunk size = (batch_size, seq_len, d_model).
-  This makes row-slice reads fast (which is the common read pattern).
-- Use tqdm to show progress during build_cache — it takes a while.
-- Do a first forward pass on a single image to infer seq_len and
-  d_model before pre-allocating the datasets.
-- model.run_with_cache() returns an activation dict; the key for
-  layer L's residual stream is "blocks.{L}.hook_resid_post".
-  Confirm this key format with Person A once model.py is working.
-- Inform Person B of the confirmed key format so features.py
-  can read activations correctly.
+def load_image_index(cachepath=None) -> dict:
+    """
+    Return {"paths": str[], "labels": str[], "classids": int[]}
+    """
+    cachepath = _resolve_cache_path(cachepath)
 
-Depends on: src/config.py, src/model.py
-Used by:    src/features.py, src/causal.py, src/circuits.py,
-            notebooks/02_feature_analysis.ipynb,
-            notebooks/03_causal_features.ipynb
-"""
+    with h5py.File(cachepath, "r") as f:
+        images = f["images"]
+        return {
+            "paths": [_decode_if_bytes(x) for x in images["paths"][:]],
+            "labels": [_decode_if_bytes(x) for x in images["labels"][:]],
+            "classids": [int(x) for x in images["classids"][:]],
+        }
 
-# TODO (Person C, Week 1 Days 2–4):
-#   1. Implement build_cache() — test with 100 images before full 5,000.
-#   2. Implement load_layer(), load_metadata(), load_image_index().
-#   3. Implement get_class_indices().
-#   4. Verify: load a slice and confirm shape (n, seq_len, d_model).
-#   5. Post confirmed HDF5 schema + hook key format to report/notes/
-#      before end of Day 4 so A and B can proceed.
+
+def get_class_indices(classname: str, cachepath=None) -> list[int]:
+    """
+    Return cache row indices for all images of a given class name.
+    """
+    index = load_image_index(cachepath)
+    target = classname.strip().lower()
+    return [i for i, label in enumerate(index["labels"]) if str(label).strip().lower() == target]
