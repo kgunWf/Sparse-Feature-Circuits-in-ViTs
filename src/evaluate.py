@@ -72,10 +72,17 @@ def compute_dead_feature_fraction(layer: int, activations: torch.Tensor, batch_s
     cfg = get_config()
     threshold = cfg.sae.dead_feature_threshold
 
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
     max_activation = None
 
     for i in range(0, len(activations), batch_size):
-        batch = activations[i:i+batch_size].cuda()
+        batch = activations[i:i + batch_size].to(device)
         with torch.no_grad():
             features = encode(batch, layer)  # (batch, seq_len, d_sae)
 
@@ -88,7 +95,10 @@ def compute_dead_feature_fraction(layer: int, activations: torch.Tensor, batch_s
             max_activation = torch.max(max_activation, batch_max.cpu())
 
         del batch, features, batch_max
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
     dead = (max_activation <= threshold).sum().item()
     total = max_activation.shape[0]
