@@ -1,7 +1,7 @@
 """
 model.py  —  Owner: Person A  —  Week 1
 
-PURPOSE: Single entry point for loading DINOv2 ViT-B/14-reg via Prisma HookedViT.
+PURPOSE: Single entry point for loading the configured DINO ViT via Prisma HookedViT.
 Never load the model anywhere else. Cache after first call.
 
 WHAT TO IMPLEMENT
@@ -19,7 +19,7 @@ preprocess_image(image_path, image_size=None)
 TESTS (notebooks/01_sae_setup.ipynb)
   - get_model() runs without error on a single image
   - logits, cache = model.run_with_cache(pixels) succeeds
-  - cache contains key "blocks.11.hook_resid_post"
+  - cache contains key f"blocks.{cfg.sae.primary_layer}.hook_resid_post"
   - preprocess_image() returns shape (1, 3, 224, 224)
   - get_model() twice returns same object (cache check)
 

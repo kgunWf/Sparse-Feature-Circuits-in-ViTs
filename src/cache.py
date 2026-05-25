@@ -6,10 +6,14 @@ from typing import Any, Iterable
 import h5py
 import numpy as np
 import torch
-from tqdm.auto import tqdm
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    def tqdm(iterable, **_kwargs):
+        return iterable
 
 from src.config import get_config
-from src.model import get_model, preprocess_image
 
 
 HOOK_KEY_TEMPLATE = "blocks.{layer}.hook_resid_post"
@@ -44,6 +48,8 @@ def _decode_if_bytes(x: Any):
 
 
 def _load_batch_inputs(model, imagepaths: list[str]) -> torch.Tensor:
+    from src.model import preprocess_image
+
     batch = []
 
     for imagepath in imagepaths:
@@ -117,6 +123,7 @@ def build_cache(
     layers = _resolve_layers(layers)
     nimages = len(imagepaths)
 
+    from src.model import get_model
     model = get_model()
     model.eval()
 
@@ -214,26 +221,31 @@ def load_metadata(cachepath=None) -> dict:
 
     with h5py.File(cachepath, "r") as f:
         meta = f["metadata"]
+        modelname = _decode_if_bytes(meta["modelname"][()])
+        imagesize = int(meta["imagesize"][()])
+        layers = [int(x) for x in meta["layers"][:]]
+        nimages = int(meta["nimages"][()])
         return {
-            "modelname": _decode_if_bytes(meta["modelname"][()]),
-            "imagesize": int(meta["imagesize"][()]),
-            "layers": [int(x) for x in meta["layers"][:]],
-            "nimages": int(meta["nimages"][()]),
+            "model_name": modelname,
+            "image_size": imagesize,
+            "layers": layers,
+            "n_images": nimages,
         }
 
 
 def load_image_index(cachepath=None) -> dict:
     """
-    Return {"paths": str[], "labels": str[], "classids": int[]}
+    Return {"paths": str[], "labels": str[], "class_ids": int[]}
     """
     cachepath = _resolve_cache_path(cachepath)
 
     with h5py.File(cachepath, "r") as f:
         images = f["images"]
+        classids = [int(x) for x in images["classids"][:]]
         return {
             "paths": [_decode_if_bytes(x) for x in images["paths"][:]],
             "labels": [_decode_if_bytes(x) for x in images["labels"][:]],
-            "classids": [int(x) for x in images["classids"][:]],
+            "class_ids": classids,
         }
 
 

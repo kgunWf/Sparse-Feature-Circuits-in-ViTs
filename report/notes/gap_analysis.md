@@ -32,7 +32,7 @@ For the flamingo/spoonbill circuit, check:
 
 Can you read the circuit as a coarse-to-fine story?
 (e.g., texture features in layer 6 → part features in layer 9
-→ semantic/discriminative features in layer 11)
+→ semantic/discriminative features in layer 9)
 
 (Fill in after inspecting the graph)
 

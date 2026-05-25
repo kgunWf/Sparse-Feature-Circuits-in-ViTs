@@ -15,9 +15,9 @@ USAGE
 -----
     from src.config import get_config
     cfg = get_config()
-    cfg.model.name          # "facebook/dinov2-vitb14-reg"
-    cfg.sae.primary_layer   # 11
-    cfg.circuit.layer_pairs # [[6, 9], [9, 11]]
+    cfg.model.name          # "facebook/dino-vitb16"
+    cfg.sae.primary_layer   # 9
+    cfg.circuit.layer_pairs # [[4, 6], [6, 9]]
 
 DEPENDENCIES: pip install pyyaml
 """

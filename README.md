@@ -19,7 +19,7 @@ DINOv2 support is unresolved. See `report/notes/person_a_notes.md`.
 **Behavior under study:** flamingo vs. spoonbill classification
 **Tooling:** Prisma / vit_prisma (Joseph et al., CVPR 2025)
 
-**Fallback:** If circuit construction is intractable within the timeline, the SAE analysis (Stages 1–2) constitutes a standalone deliverable: monosemanticity scores, CLIP-based concept labeling, and a CaFE-style causal sanity check on DINOv2.
+**Fallback:** If circuit construction is intractable within the timeline, the SAE analysis (Stages 1–2) constitutes a standalone deliverable: monosemanticity scores, CLIP-based concept labeling, and a CaFE-style causal sanity check on the configured DINO model.
 
 ---
 
@@ -27,7 +27,7 @@ DINOv2 support is unresolved. See `report/notes/person_a_notes.md`.
 
 ```
 Stage 1 — src/model.py + src/sae.py
-  Load DINOv2 via Prisma HookedViT. Load pre-trained SAEs.
+  Load the configured DINO model via Prisma HookedViT. Load pre-trained SAEs.
   Verify reconstruction quality and L0 sparsity.
 
 Stage 2 — src/cache.py + src/features.py

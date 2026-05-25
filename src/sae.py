@@ -33,7 +33,7 @@ get_reconstruction_loss(activations, layer=None)
     ||x - decode(encode(x))||^2 / ||x||^2. Return: float. Target < 0.05.
 
 TESTS (notebooks/01_sae_setup.ipynb)
-  - get_sae(11) loads; sae.W_enc.shape == (d_model, d_sae)
+  - get_sae(cfg.sae.primary_layer) loads; sae.W_enc.shape == (d_model, d_sae)
   - encode() output shape is (batch, seq_len, d_sae) and is sparse
   - decode(encode(x)) approx reconstructs x
   - ablate_feature zeros target feature, leaves others unchanged
@@ -53,6 +53,31 @@ import src.config as _cfg_mod
 
 # --- cache: one SAE per layer, loaded on first request ---
 _sae_cache: dict[int, SparseAutoencoder] = {}
+
+
+def _load_pretrained_sae(weights_path: Path, device: str) -> SparseAutoencoder:
+    if device != "cpu":
+        return SparseAutoencoder.load_from_pretrained(
+            str(weights_path),
+            current_cfg={"_device": device},
+        )
+
+    # Some released Prisma SAE checkpoints were saved from CUDA; force CPU
+    # remapping so the same files load on CPU-only machines.
+    torch_load = torch.load
+
+    def load_on_cpu(*args, **kwargs):
+        kwargs.setdefault("map_location", torch.device("cpu"))
+        return torch_load(*args, **kwargs)
+
+    try:
+        torch.load = load_on_cpu
+        return SparseAutoencoder.load_from_pretrained(
+            str(weights_path),
+            current_cfg={"_device": "cpu"},
+        )
+    finally:
+        torch.load = torch_load
 
 
 def _sae_dir(layer: int) -> Path:
@@ -98,7 +123,7 @@ def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
         )
 
     # load_from_pretrained finds config.json in the same directory automatically
-    sae = SparseAutoencoder.load_from_pretrained(str(weights_path))
+    sae = _load_pretrained_sae(weights_path, device)
     sae.to(device)
     sae.device = device  # sync string attribute so encode/decode move tensors to the right place
     sae.eval()
