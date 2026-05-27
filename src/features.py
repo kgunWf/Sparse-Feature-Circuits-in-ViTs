@@ -85,7 +85,7 @@ Used by:    notebooks/02_feature_analysis.ipynb,
 # Done (Person B, Week 1):
 #   1. get_top_patches() and get_top_patches_all_features().
 #   2. load_clip_labeler() and label_feature_clip().
-#   3. Manual sanity check is blocked until cache, SAE weights, and images exist.
+#   3. Verified on the local layer 9 cache, SAE weights, and source images.
 #
 # TODO (Person B, Week 2):
 #   4. Implement compute_monosemanticity_score() per Pach et al.
@@ -102,7 +102,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw
 
 try:
     from tqdm.auto import tqdm
@@ -290,6 +290,40 @@ def _model_device(model) -> torch.device:
         return torch.device("cpu")
 
 
+def crop_patch_images(top_patches, context_patches: int = 0, mark_patch: bool = False) -> list[Image.Image]:
+    """Return image crops for patch-token entries, optionally with local context."""
+    cfg = get_config()
+    crops = []
+    for patch in top_patches:
+        if patch.get("patch_row") is None or patch.get("patch_col") is None:
+            continue
+        with Image.open(Path(patch["image_path"])) as image:
+            image = image.convert("RGB").resize((cfg.model.image_size, cfg.model.image_size))
+            left = patch["patch_col"] * cfg.model.patch_size
+            top = patch["patch_row"] * cfg.model.patch_size
+            right = left + cfg.model.patch_size
+            bottom = top + cfg.model.patch_size
+            margin = max(0, int(context_patches)) * cfg.model.patch_size
+            crop_box = (
+                max(0, left - margin),
+                max(0, top - margin),
+                min(cfg.model.image_size, right + margin),
+                min(cfg.model.image_size, bottom + margin),
+            )
+            crop = image.crop(crop_box).copy()
+            if mark_patch:
+                draw = ImageDraw.Draw(crop)
+                mark_box = (
+                    left - crop_box[0],
+                    top - crop_box[1],
+                    right - crop_box[0],
+                    bottom - crop_box[1],
+                )
+                draw.rectangle(mark_box, outline="red", width=2)
+            crops.append(crop)
+    return crops
+
+
 def _text_embeddings(vocab: list[str], clip_model, processor, device: torch.device) -> torch.Tensor:
     key = (id(clip_model), str(device), tuple(vocab))
     if key not in _clip_text_cache:
@@ -306,17 +340,7 @@ def label_feature_clip(top_patches, vocab, clip_model, processor, top_n=3) -> li
     if not top_patches or not vocab or top_n <= 0:
         return []
 
-    crops = []
-    for patch in top_patches:
-        if patch.get("patch_row") is None or patch.get("patch_col") is None:
-            continue
-        with Image.open(Path(patch["image_path"])) as image:
-            image = image.convert("RGB").resize((cfg.model.image_size, cfg.model.image_size))
-            left = patch["patch_col"] * cfg.model.patch_size
-            top = patch["patch_row"] * cfg.model.patch_size
-            box = (left, top, left + cfg.model.patch_size, top + cfg.model.patch_size)
-            crops.append(image.crop(box))
-
+    crops = crop_patch_images(top_patches)
     if not crops:
         raise ValueError("label_feature_clip requires patch-token entries with patch_row/patch_col")
 
