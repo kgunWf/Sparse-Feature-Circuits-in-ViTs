@@ -73,6 +73,16 @@ Commit updates regularly so the team can follow your progress.
 
 ### Findings
 
+- **Dead feature fraction is ~96% on a single image — this is expected and not a bug.**
+  `compute_dead_feature_fraction` measures features whose max activation never exceeds
+  `cfg.sae.dead_feature_threshold` (0.01). With only one image and 197 tokens, ~96.6% of
+  the 49,152 SAE features never fire — they are specialists for other visual patterns
+  (other textures, object parts, scenes) that simply don't appear in one bird photo.
+  Only ~1,671 features activate at all for a single spoonbill image.
+  The metric is only meaningful across the full dataset (200+ images); a well-trained SAE
+  should have near-0% truly dead features over many images.
+  → Do not assert on this cell until `build_cache()` is available and the HDF5 is populated.
+
 - **Hook key format: `blocks.{N}.hook_resid_post`** — confirmed for all layers 0–11.
   Full list also includes `hook_resid_pre` and `hook_resid_mid` per block.
   → **Share with Person C before Day 4** (needed for `build_cache()` in `src/cache.py`).
