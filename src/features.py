@@ -353,3 +353,86 @@ def label_feature_clip(top_patches, vocab, clip_model, processor, top_n=3) -> li
     scores = image_embedding @ text_embeddings.T
     top_scores = torch.topk(scores.squeeze(0), k=min(top_n, len(vocab))).indices.cpu().tolist()
     return [vocab[idx] for idx in top_scores]
+
+def compute_monosemanticity_score(
+    layer: int,
+    activations,
+    image_paths: list,
+    clip_model,
+    processor,
+    batch_size: int = 16,
+) -> dict:
+    """
+    Monosemanticity Score per Pach et al. (NeurIPS 2025) metric.py.
+    MS(f) = sum_{i<j} a_i*a_j*cos(e_i,e_j) / sum_{i<j} a_i*a_j
+    Dead features return float("nan").
+    """
+    import torch
+    import torch.nn.functional as F
+    from PIL import Image
+    from tqdm.auto import tqdm
+    from src.sae import encode
+
+    image_paths = list(image_paths)
+    n_images = activations.shape[0]
+    device = next(clip_model.parameters()).device
+
+    # Step 1 — SAE encode in small batches to avoid OOM, keep on CPU
+    cls_acts_list = []
+    for i in range(0, n_images, batch_size):
+        batch = activations[i:i+batch_size].cuda()
+        with torch.no_grad():
+            feat = encode(batch, layer)   # (B, seq_len, d_sae)
+        cls_acts_list.append(feat[:, 0, :].cpu().float())
+        del batch, feat
+        torch.cuda.empty_cache()
+    cls_acts = torch.cat(cls_acts_list, dim=0)   # (n_images, d_sae)
+
+    # Min-max normalise per feature
+    min_vals = cls_acts.min(dim=0, keepdim=True).values
+    max_vals = cls_acts.max(dim=0, keepdim=True).values
+    cls_acts_norm = (cls_acts - min_vals) / (max_vals - min_vals).clamp(min=1e-8)
+
+    # Step 2 — CLIP embeddings via vision_model (avoids BaseModelOutputWithPooling bug)
+    all_embeddings = []
+    for start in range(0, n_images, batch_size):
+        batch_paths = image_paths[start: start + batch_size]
+        images = [Image.open(p).convert("RGB") for p in batch_paths]
+        inputs = processor(images=images, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            out = clip_model.vision_model(**inputs)
+            embs = out.pooler_output   # always a plain tensor (B, 768)
+        all_embeddings.append(F.normalize(embs, dim=-1).cpu().float())
+        for img in images:
+            img.close()
+        del inputs, out, embs
+        torch.cuda.empty_cache()
+    embeddings = torch.cat(all_embeddings, dim=0)   # (n_images, embed_dim)
+
+    # Step 3 — Pairwise similarity entirely on CPU
+    d_sae = cls_acts_norm.shape[1]
+    weighted_sim_sum = torch.zeros(d_sae)
+    weight_sum       = torch.zeros(d_sae)
+
+    for i in tqdm(range(n_images), desc=f"MS score layer {layer}"):
+        for j_start in range(i + 1, n_images, batch_size):
+            j_end = min(j_start + batch_size, n_images)
+            emb_i = embeddings[i]
+            emb_j = embeddings[j_start:j_end]
+            act_i = cls_acts_norm[i]
+            act_j = cls_acts_norm[j_start:j_end]
+            cos_ij = F.cosine_similarity(
+                emb_i.unsqueeze(0).expand(j_end - j_start, -1),
+                emb_j, dim=1,
+            )
+            weights = act_i.unsqueeze(0) * act_j
+            weighted_sim_sum += (weights * cos_ij.unsqueeze(1)).sum(dim=0)
+            weight_sum       += weights.sum(dim=0)
+
+    scores = torch.where(
+        weight_sum > 0,
+        weighted_sim_sum / weight_sum,
+        torch.tensor(float("nan")),
+    )
+    return {int(idx): float(scores[idx]) for idx in range(d_sae)}
