@@ -20,6 +20,7 @@ venv/
 outputs/figures/*
 outputs/caches/*
 outputs/circuits/*
+outputs/features/*
 !outputs/figures/.gitkeep
 !outputs/caches/.gitkeep
 !outputs/circuits/.gitkeep
@@ -27,6 +28,7 @@ outputs/saes/*
 
 # ── Data ──────────────────────────────────────────────────────
 data/imagenet_val/
+data/imagenet_val_*/
 data/*.tar
 data/*.zip
 data/*.h5

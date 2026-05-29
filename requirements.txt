@@ -15,8 +15,9 @@ pyyaml>=6.0
 git+https://github.com/Prisma-Multimodal/ViT-Prisma.git
 
 # ── CLIP (for automated concept labeling in features.py) ──────
-transformers>=4.40.0
+transformers>=4.40.0,<5
 open-clip-torch>=2.24.0
+wordfreq>=3.1.1
 
 # ── Activation cache ──────────────────────────────────────────
 h5py>=3.10.0
