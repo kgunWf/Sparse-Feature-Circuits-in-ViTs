@@ -41,7 +41,7 @@ features:
 
 # --- Causal analysis ---
 causal:
-  logit_diff_batch_size: 32
+  logit_diff_batch_size: 8
   importance_percentile: 80
   min_circuit_nodes: 5
 
