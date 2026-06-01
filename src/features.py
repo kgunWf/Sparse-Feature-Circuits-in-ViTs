@@ -504,10 +504,21 @@ def compute_monosemanticity_score(
     MS → 0: patches visually diverse → polysemantic.
     nan: dead feature (< 2 activating patches).
     """
+    cfg = get_config()
+    dead_threshold = cfg.sae.dead_feature_threshold
     device = _model_device(clip_model)
     scores: dict[int, float] = {}
 
     for feat_idx, patches in tqdm(all_top_patches.items(), desc="MS scores"):
+        # Pach et al. 2025 compliance: exclude features whose dataset-wide maximum
+        # activation never exceeds the dead-feature threshold.  The top-k patches
+        # already contain the highest activations for this feature, so their max
+        # equals the global max — no re-encoding needed.
+        max_act = max((p["activation_value"] for p in patches), default=float("-inf"))
+        if max_act <= dead_threshold:
+            scores[feat_idx] = float("nan")
+            continue
+
         valid = [p for p in patches if p.get("patch_row") is not None][:max_patches]
 
         # When using precomputed embeddings, keep only patches that are in the dict
@@ -720,24 +731,41 @@ def crop_patch_images(
     return crops
 
 
-def crop_clip_images(patches: list[dict], clip_image_size: int = 224) -> list[Image.Image]:
-    """Return CLIP-sized crops centered on each patch token.
+def crop_clip_images(
+    patches: list[dict],
+    clip_image_size: int = 224,
+    context_size: int = 96,
+) -> list[Image.Image]:
+    """Return crops centered on each patch token, sized for CLIP input.
 
-    Uses ``ImageOps.fit`` (resize-then-center-crop) to match the model's
-    preprocessing, then crops a ``clip_image_size × clip_image_size`` window
-    centered on the active patch.  Gives CLIP proper-resolution input instead
-    of a heavily-upscaled 80 px patch crop.  Pass the result of
-    ``_clip_image_size(processor)`` as ``clip_image_size`` for exact alignment.
+    ``context_size`` controls the crop window in the model's 224×224 image
+    space before upscaling to ``clip_image_size``.  Must be < image_size
+    (224) — passing 224 would always return the full image because the crop
+    window can't be centered when it equals the image size.
+
+    Default ``context_size=96`` gives a ~6×6 patch neighbourhood (each patch
+    is 16 px), which is large enough for CLIP to read texture/colour/shape
+    without including irrelevant scene background.
+
+    Why this matters: if context_size == image_size, _centered_square_box
+    clamps both x0 and y0 to 0, so every crop is (0,0,224,224) — the full
+    image — and CLIP labels the dominant ImageNet subject rather than the
+    activated patch region.
     """
     cfg = get_config()
+    # Guard: context_size must be strictly less than image_size
+    context_size = min(context_size, cfg.model.image_size - cfg.model.patch_size)
     crops: list[Image.Image] = []
     for patch in patches:
         if patch.get("patch_row") is None or patch.get("patch_col") is None:
             continue
         with Image.open(Path(patch["image_path"])) as img:
             img = _model_space_image(img)
-        box = _centered_square_box(_patch_box(patch), clip_image_size, cfg.model.image_size)
-        crops.append(img.crop(box))
+        box = _centered_square_box(_patch_box(patch), context_size, cfg.model.image_size)
+        crop = img.crop(box)
+        if clip_image_size != context_size:
+            crop = crop.resize((clip_image_size, clip_image_size), Image.Resampling.BILINEAR)
+        crops.append(crop)
     return crops
 
 
