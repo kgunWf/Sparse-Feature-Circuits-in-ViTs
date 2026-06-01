@@ -143,12 +143,10 @@ TIER1_SHAPES = [
     "slender silhouette", "stocky silhouette", "tall silhouette", "compact silhouette",
     "wide silhouette", "narrow silhouette", "upright posture", "horizontal posture",
     # Edge and gradient descriptors
-    "sharp edge", "soft edge", "blurred edge", "defined outline",
+    "sharp edge", "soft edge", "defined outline",
     "gradient transition", "high contrast", "low contrast", "sharp contrast",
-    # Spatial descriptors
-    "foreground object", "background element", "centered composition",
-    "partial view", "full view", "close-up view", "distant view",
-    "aerial view", "side view", "front view", "profile view",
+    # Spatial descriptors (photographic framing terms removed — too generic)
+    "profile view",
 ]
 
 TIER1_PATTERNS = [
@@ -164,7 +162,7 @@ TIER1_PATTERNS = [
 TIER1_LIGHTING = [
     "bright lighting", "dark lighting", "soft lighting", "harsh lighting",
     "natural light", "sunlight", "shadow", "highlight", "reflection",
-    "backlit", "overexposed", "underexposed", "high contrast lighting",
+    "backlit", "high contrast lighting",
     "warm light", "cool light", "diffuse light", "directional light",
 ]
 
@@ -286,10 +284,9 @@ TIER3_CONTEXTUAL = [
     "swimming", "diving", "feeding", "resting", "walking",
     "flock of birds", "single bird", "group of animals",
     "in water", "on land", "on branch", "on rock", "on ground",
-    # Photographic context
-    "wildlife photography", "nature photography", "close-up photograph",
-    "blurred background", "bokeh background", "sharp background",
-    "natural habitat",
+    # Photographic context (photography genre/artifact terms removed)
+    "close-up photograph",
+    "sharp background", "natural habitat",
 ]
 
 TIER3 = TIER3_NATURAL_SCENES + TIER3_MAN_MADE_SCENES + TIER3_CONTEXTUAL
@@ -368,9 +365,9 @@ def _load_tier4_from_timm(subset: str = "full") -> list:
         "1k"   — 1,000 ImageNet-1k class names only. Directly covers every
                  class in the 5,000-image activation cache; no noise from
                  absent 21k synsets. Recommended when label quality matters.
-        "full" — 1k base + ~2,900 targeted ImageNet-21k additions filtered
-                 to visually concrete categories (birds, animals, plants, etc.).
-                 Broader coverage but slightly more candidate dilution.
+        "full" — 1k base + targeted ImageNet-21k additions filtered to
+                 visually concrete categories. Uses both a visual allowlist
+                 and a non-visual blocklist to minimise label pollution.
 
     Source: timm.data.imagenet_info.ImageNetInfo — no network access needed.
     timm bundles imagenet_synset_to_lemma.txt internally.
@@ -378,7 +375,9 @@ def _load_tier4_from_timm(subset: str = "full") -> list:
 
     Falls back to empty list if timm is not installed.
     """
-    # Visual keyword filter for 21k additions beyond ImageNet-1k
+    # ------------------------------------------------------------------ #
+    # Positive: substring keywords that signal visually concrete synsets  #
+    # ------------------------------------------------------------------ #
     VISUAL_KEYWORDS = [
         # Birds — heavily weighted; directly relevant to flamingo/spoonbill task
         'bird', 'finch', 'warbler', 'sparrow', 'hawk', 'eagle', 'owl', 'duck',
@@ -394,19 +393,84 @@ def _load_tier4_from_timm(subset: str = "full") -> list:
         'monkey', 'ape', 'rabbit', 'squirrel', 'mouse', 'rat',
         'snake', 'lizard', 'turtle', 'frog', 'salamander', 'gecko',
         'butterfly', 'moth', 'beetle', 'dragonfly', 'bee', 'wasp',
-        # Plants
+        'spider', 'crab', 'lobster', 'shrimp', 'insect', 'larva',
+        # Plants and fungi
         'oak', 'pine', 'maple', 'birch', 'willow', 'palm', 'fern',
         'moss', 'mushroom', 'flower', 'rose', 'tulip', 'orchid', 'lily',
-        # Natural materials and objects
+        'cactus', 'bamboo', 'seaweed', 'algae', 'lichen', 'fungus',
+        # Natural materials and scene elements
         'rock', 'stone', 'sand', 'mud', 'coral', 'shell', 'feather',
-        # Food
-        'fruit', 'berry', 'nut', 'seed',
+        'pebble', 'cliff', 'glacier', 'lava', 'crystal',
+        # Food and produce
+        'fruit', 'berry', 'nut', 'seed', 'vegetable', 'grain',
     ]
+
+    # ------------------------------------------------------------------ #
+    # Negative: whole-word matches that flag non-visual concepts          #
+    # Applied AFTER the visual allowlist — removes false positives.       #
+    # ------------------------------------------------------------------ #
+    # Words that, when present as a standalone token, indicate the concept
+    # is medical, taxonomic, abstract, or otherwise non-visual.
+    _BLOCK_WORDS = {
+        # Medical / pathological
+        "disease", "disorder", "syndrome", "infection", "deficiency",
+        "cancer", "tumor", "tumour", "fever", "virus", "bacteria",
+        "poisoning", "allergy", "toxin", "parasite", "pathology",
+        "symptom", "treatment", "therapy", "drug", "pharmaceutical",
+        # Abstract / conceptual / relational
+        "process", "phenomenon", "behavior", "behaviour", "relationship",
+        "mechanism", "function", "effect", "system", "method", "technique",
+        "theory", "principle", "concept", "ideology", "movement", "period",
+        "culture", "tradition", "language", "music", "dance", "style",
+        "ceremony", "ritual", "belief", "religion", "philosophy",
+        # Taxonomic rank indicators (scientific Latin names)
+        "genus", "phylum", "kingdom", "subspecies", "cultivar", "variety",
+        # Collective / generic group nouns that don't describe visual content
+        "complex", "clade", "lineage", "taxon",
+    }
+
+    # Name-ending patterns that reliably indicate taxonomic family/order names
+    # (e.g. "Muscicapidae", "Apocynaceae", "Passeriformes")
+    _BLOCK_SUFFIXES = (
+        "idae", "inae", "aceae", "ales", "iformes", "oidea",  # taxonomy
+        "osis", "itis", "emia", "uria",                        # medical
+        "ology", "ography", "onomy", "onomics",               # academic fields
+    )
+
+    def _is_acceptable_21k(name: str) -> bool:
+        """Return True if name passes all quality filters for 21k additions."""
+        lower = name.lower()
+        words = lower.split()
+
+        # Basic format checks
+        if len(name) < 3:
+            return False
+        if any(c.isdigit() for c in name):
+            return False
+        if len(words) > 3:
+            return False
+        if "_" in name or "/" in name or "(" in name:
+            return False
+
+        # Block by suffix (catches taxonomic family/order names)
+        if any(lower.endswith(sfx) for sfx in _BLOCK_SUFFIXES):
+            return False
+
+        # Block all-caps abbreviations (HIV, DNA, RNA, etc.)
+        if name.isupper() and len(name) <= 6:
+            return False
+
+        # Block by word content (catches medical, abstract, relational)
+        if any(w in _BLOCK_WORDS for w in words):
+            return False
+
+        # Must contain a visual keyword to be included from 21k
+        return any(kw in lower for kw in VISUAL_KEYWORDS)
 
     try:
         from timm.data.imagenet_info import ImageNetInfo
 
-        # Base: all ImageNet-1k class names (first lemma only)
+        # Base: all ImageNet-1k class names (first lemma only) — kept as-is
         info1k = ImageNetInfo('imagenet1k')
         labels1k = [l.split(',')[0].strip()
                     for l in info1k.label_descriptions(detailed=False)]
@@ -417,24 +481,22 @@ def _load_tier4_from_timm(subset: str = "full") -> list:
                   f"(ImageNet-1k only) — Tier 4")
             return result
 
-        # subset == "full": add visually concrete ImageNet-21k synsets not in 1k
+        # subset == "full": add filtered ImageNet-21k synsets not in 1k
         seen = {l.lower() for l in labels1k}
         info21k = ImageNetInfo('imagenet-21k')
+        added = 0
         for label in info21k.label_descriptions(detailed=False):
             first = label.split(',')[0].strip()
             first_lower = first.lower()
             if first_lower in seen:
                 continue
-            if len(first) < 3 or any(c.isdigit() for c in first):
-                continue
-            if len(first.split()) > 3:
-                continue
-            if any(kw in first_lower for kw in VISUAL_KEYWORDS):
+            if _is_acceptable_21k(first):
                 seen.add(first_lower)
                 result.append(first)
+                added += 1
 
         print(f"[vocab] Loaded {len(result)} labels from timm "
-              f"(1k base + targeted 21k additions) — Tier 4")
+              f"(1k base + {added} targeted 21k additions) — Tier 4")
         return result
 
     except Exception as e:
