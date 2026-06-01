@@ -68,14 +68,203 @@ Depends on: src/config.py
 Used by:    all notebooks
 """
 
-# TODO (Person B):
-#   Week 2:
-#   1. Implement plot_feature_gallery() — needed for notebook 02.
-#   2. Implement plot_monosemanticity_distribution().
-#   3. Implement plot_layer_evolution().
-#   4. Implement plot_ablation_ranking() — needed for notebook 03.
-#   5. Implement plot_cafe_comparison().
-#
-#   Week 3:
-#   6. Implement plot_circuit() once node attribute format is confirmed
-#      with Person A (circuits.py). Target: Day 17.
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from src.config import get_config
+
+_FIG_DPI = 150
+
+# Colour palette for the six annotation categories
+CATEGORY_COLORS: dict[str, str] = {
+    "texture":  "#e07b39",
+    "color":    "#f5c842",
+    "part":     "#4caf50",
+    "scene":    "#2196f3",
+    "semantic": "#9c27b0",
+    "unclear":  "#9e9e9e",
+}
+
+
+def _save(fig: plt.Figure, save_path: str | None) -> plt.Figure:
+    if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=_FIG_DPI, bbox_inches="tight")
+    return fig
+
+
+def plot_monosemanticity_distribution(
+    scores_dict: dict[int, float],
+    layer: int,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Histogram of MS scores with median and 80th-pct vertical markers."""
+    values = sorted(v for v in scores_dict.values() if not np.isnan(v))
+    dead   = sum(1 for v in scores_dict.values() if np.isnan(v))
+    median = float(np.median(values))
+    p80    = float(np.percentile(values, 80))
+
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(8, 4), dpi=_FIG_DPI)
+        ax.hist(values, bins=60, color="#4a90d9", edgecolor="white", linewidth=0.4)
+        ax.axvline(median, color="#e07b39", linewidth=1.8, linestyle="--",
+                   label=f"Median  {median:.3f}")
+        ax.axvline(p80,    color="#9c27b0", linewidth=1.8, linestyle=":",
+                   label=f"80th pct  {p80:.3f}")
+        ax.set_xlabel("Monosemanticity Score (Pach et al. 2025, Eq. 9)", fontsize=11)
+        ax.set_ylabel("Feature count", fontsize=11)
+        ax.set_title(
+            f"MS distribution — Layer {layer}"
+            f"  ({len(values):,} active, {dead:,} dead/NaN)",
+            fontsize=12, fontweight="bold",
+        )
+        ax.legend(fontsize=10)
+        fig.tight_layout()
+
+    return _save(fig, save_path)
+
+
+def plot_feature_gallery(
+    all_top_patches: dict[int, list[dict]],
+    feature_indices: list[int],
+    labels: dict[int, list[str]] | None = None,
+    scores: dict[int, float] | None = None,
+    context_patches: int = 2,
+    crop_size: int = 128,
+    max_patches: int | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Matplotlib figure wrapping make_patch_grid for the top-50 gallery.
+
+    Delegates crop rendering to :func:`src.features.make_patch_grid` and
+    embeds the resulting PIL image in a matplotlib figure so it can be
+    saved at report quality and displayed inline in Jupyter.
+
+    Args:
+        all_top_patches: full top-patches dict from get_top_patches_all_features.
+        feature_indices: ordered list of feature indices to display (e.g. top-50).
+        labels: optional {feat_idx: [label1, label2, label3]}.
+        scores: optional {feat_idx: ms_score} — appended to row annotations.
+        context_patches: neighbour patches around the active patch in each crop.
+        crop_size: pixel size of each crop in the output grid.
+        max_patches: patches per feature row (defaults to cfg.features.top_k_patches).
+        save_path: if given, save as PNG.
+    """
+    from src.features import make_patch_grid
+
+    labels = labels or {}
+    scores = scores or {}
+
+    # Annotate labels with MS score suffix
+    annotated_labels = {
+        fi: (labels.get(fi, []) + [f"MS={scores[fi]:.3f}"])
+        if fi in scores else labels.get(fi, [])
+        for fi in feature_indices
+    }
+
+    subset = {fi: all_top_patches[fi] for fi in feature_indices if fi in all_top_patches}
+    grid_img = make_patch_grid(
+        subset,
+        labels=annotated_labels,
+        context_patches=context_patches,
+        crop_size=crop_size,
+        max_patches=max_patches,
+    )
+
+    w, h = grid_img.size
+    fig, ax = plt.subplots(figsize=(w / 100, h / 100), dpi=100)
+    ax.imshow(grid_img)
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+
+    return _save(fig, save_path)
+
+
+def plot_layer_evolution(
+    category_counts_per_layer: dict[int, dict[str, int]],
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Stacked bar chart of concept category composition across layers.
+
+    Args:
+        category_counts_per_layer: {layer: {category: count}}
+            e.g. {4: {"texture": 12, "color": 5, ...}, 9: {...}}
+    """
+    layers = sorted(category_counts_per_layer)
+    categories = list(CATEGORY_COLORS)
+
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(7, 5), dpi=_FIG_DPI)
+        bottoms = np.zeros(len(layers))
+        x = np.arange(len(layers))
+
+        for cat in categories:
+            vals = np.array([
+                category_counts_per_layer[l].get(cat, 0) for l in layers
+            ], dtype=float)
+            ax.bar(x, vals, bottom=bottoms, label=cat,
+                   color=CATEGORY_COLORS[cat], edgecolor="white", linewidth=0.5)
+            bottoms += vals
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"Layer {l}" for l in layers])
+        ax.set_ylabel("Feature count", fontsize=11)
+        ax.set_title("Concept category evolution across layers", fontsize=13,
+                     fontweight="bold")
+        ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
+        fig.tight_layout()
+
+    return _save(fig, save_path)
+
+
+def plot_ablation_ranking(
+    importance_scores: dict[int, float],
+    feature_labels: dict[int, list[str]],
+    top_n: int = 20,
+    layer: int | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
+    """Horizontal bar chart of top-N causally important features.
+
+    Args:
+        importance_scores: {feature_idx: logit_diff_change} from ablation loop.
+        feature_labels: {feature_idx: [label1, ...]} from label_features_clip.
+        top_n: how many features to display.
+        layer: layer number for the title (optional).
+    """
+    ranked = sorted(importance_scores, key=importance_scores.get, reverse=True)[:top_n]
+    values = [importance_scores[fi] for fi in ranked]
+    names  = [
+        f"f{fi}  " + " / ".join(feature_labels.get(fi, ["?"])[:2])
+        for fi in ranked
+    ]
+
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(8, top_n * 0.38 + 1), dpi=_FIG_DPI)
+        y = np.arange(len(ranked))
+        ax.barh(y, values, color="#4a90d9", edgecolor="white", linewidth=0.4)
+        ax.set_yticks(y)
+        ax.set_yticklabels(names, fontsize=8)
+        ax.invert_yaxis()
+        ax.set_xlabel("|Δ logit diff| (flamingo − spoonbill)", fontsize=10)
+        title = f"Top-{top_n} causal features"
+        if layer is not None:
+            title += f" — Layer {layer}"
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        fig.tight_layout()
+
+    return _save(fig, save_path)
+
+
+# --- Week 3 stubs (implement once circuit format confirmed with Person A) ---
+
+def plot_cafe_comparison(cafe_results, feature_idx, save_path=None):
+    raise NotImplementedError("plot_cafe_comparison — implement in Week 2 (Person B)")
+
+
+def plot_circuit(circuit, save_path=None):
+    raise NotImplementedError("plot_circuit — implement in Week 3 after circuits.py spec confirmed")
