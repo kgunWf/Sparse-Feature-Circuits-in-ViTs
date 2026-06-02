@@ -91,14 +91,14 @@ python -m ipykernel install --user --name vit_mech --display-name "Python (vit_m
 
 In VS Code / Jupyter, select the **Python (vit_mech)** kernel before running any notebook.
 
-Download a small test set (flamingo + spoonbill, 5 images each):
+Download behavior-class images (flamingo + spoonbill, up to 200 each):
 
 ```bash
-python data/load_data.py
+python utils/load_data.py
 ```
 
-For the full pipeline, download ImageNet val and update `data/imagenet_val_path` in
-`configs/default.yaml`.
+Streams ImageNet validation then train splits deterministically — everyone gets
+the same images. Re-run safe: skips files already present.
 
 ## SAE Weights
 
