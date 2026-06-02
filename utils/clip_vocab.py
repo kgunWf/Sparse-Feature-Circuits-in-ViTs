@@ -6,7 +6,7 @@ CLIP auto-labeling vocabulary for SAE feature analysis.
 
 USAGE
 -----
-    from utils.clip_vocab import get_vocab
+    from data.clip_vocab import get_vocab
     vocab = get_vocab()          # full ~5,000 strings
     vocab = get_vocab(tiers=[1, 2])  # tiers 1+2 only
 
@@ -143,12 +143,10 @@ TIER1_SHAPES = [
     "slender silhouette", "stocky silhouette", "tall silhouette", "compact silhouette",
     "wide silhouette", "narrow silhouette", "upright posture", "horizontal posture",
     # Edge and gradient descriptors
-    "sharp edge", "soft edge", "blurred edge", "defined outline",
+    "sharp edge", "soft edge", "defined outline",
     "gradient transition", "high contrast", "low contrast", "sharp contrast",
-    # Spatial descriptors
-    "foreground object", "background element", "centered composition",
-    "partial view", "full view", "close-up view", "distant view",
-    "aerial view", "side view", "front view", "profile view",
+    # Spatial descriptors (photographic framing terms removed — too generic)
+    "profile view",
 ]
 
 TIER1_PATTERNS = [
@@ -164,13 +162,18 @@ TIER1_PATTERNS = [
 TIER1_LIGHTING = [
     "bright lighting", "dark lighting", "soft lighting", "harsh lighting",
     "natural light", "sunlight", "shadow", "highlight", "reflection",
-    "backlit", "overexposed", "underexposed", "high contrast lighting",
+    "backlit", "high contrast lighting",
     "warm light", "cool light", "diffuse light", "directional light",
+]
+
+TIER1_TEXT = [
+    "text overlay", "typography", "printed text",
+    "signage", "logo", "handwriting",
 ]
 
 TIER1 = (
     TIER1_TEXTURES + TIER1_COLORS + TIER1_SHAPES +
-    TIER1_PATTERNS + TIER1_LIGHTING
+    TIER1_PATTERNS + TIER1_LIGHTING + TIER1_TEXT
 )
 
 # =============================================================================
@@ -272,7 +275,7 @@ TIER3_MAN_MADE_SCENES = [
     "road", "street", "building", "house", "room", "garden", "park",
     "bridge", "fence", "wall", "window", "door",
     "urban environment", "rural environment", "indoor scene", "outdoor scene",
-    "zoo enclosure", "wildlife reserve", "nature reserve",
+    "zoo enclosure", "nature reserve",
 ]
 
 TIER3_CONTEXTUAL = [
@@ -281,9 +284,9 @@ TIER3_CONTEXTUAL = [
     "swimming", "diving", "feeding", "resting", "walking",
     "flock of birds", "single bird", "group of animals",
     "in water", "on land", "on branch", "on rock", "on ground",
-    # Background context
-    "blurred background", "bokeh background", "sharp background",
-    "natural habitat", "captive animal",
+    # Photographic context (photography genre/artifact terms removed)
+    "close-up photograph",
+    "sharp background", "natural habitat",
 ]
 
 TIER3 = TIER3_NATURAL_SCENES + TIER3_MAN_MADE_SCENES + TIER3_CONTEXTUAL
@@ -292,23 +295,6 @@ TIER3 = TIER3_NATURAL_SCENES + TIER3_MAN_MADE_SCENES + TIER3_CONTEXTUAL
 # =============================================================================
 # TIER 4 — ImageNet-21k class names, cleaned (~3,700 strings, loaded at runtime)
 # =============================================================================
-
-def _normalize_label(label: str) -> str:
-    """Return a lowercase, whitespace-normalized label."""
-    return " ".join(str(label).strip().lower().split())
-
-
-def _dedupe_normalized(labels: list) -> list:
-    """Normalize labels and deduplicate while preserving order."""
-    seen = set()
-    deduped = []
-    for label in labels:
-        key = _normalize_label(label)
-        if key not in seen and len(key) >= 3:
-            seen.add(key)
-            deduped.append(key)
-    return deduped
-
 
 def _clean_imagenet22k(raw_labels: list) -> list:
     """
@@ -341,7 +327,7 @@ def _clean_imagenet22k(raw_labels: list) -> list:
     cleaned = []
     for label in raw_labels:
         # Take first name from comma-separated entries
-        name = _normalize_label(label.split(",")[0])
+        name = label.split(",")[0].strip()
 
         # Basic filters
         if len(name) < 3:
@@ -360,7 +346,7 @@ def _clean_imagenet22k(raw_labels: list) -> list:
             continue
 
         # Deduplicate
-        key = name
+        key = name.lower()
         if key in seen:
             continue
         seen.add(key)
@@ -369,25 +355,19 @@ def _clean_imagenet22k(raw_labels: list) -> list:
     return cleaned
 
 
-def _load_tier4_from_timm() -> list:
+def _load_tier4_from_timm(subset: str = "full") -> list:
     """
-    Load a focused ~3,900-string vocabulary from timm's bundled ImageNet synsets.
+    Load Tier 4 vocabulary from timm's bundled ImageNet synsets.
 
-    Strategy (aligned with project plan '10k vocab' spec):
-      Base: all 1,000 ImageNet-1k class names — directly represent the classes
-            in the 5,000-image activation cache.
-      Plus: ~2,900 additional entries from ImageNet-21k filtered to visually
-            concrete categories relevant to the project: birds (heavily weighted
-            for the flamingo/spoonbill task), other animals, plants, natural
-            materials, food. Excludes abstract synsets, Latin taxonomic names,
-            medical terms, and multi-word technical phrases.
-
-    Why not all 21k:
-      - 20k strings dilute cosine similarity scores — more candidates means
-        more chance of a spurious near-match winning top-3
-      - Most of 21k is absent from any image in a 5,000-image ImageNet-1k cache
-      - Abstract synsets ("benthos", "heterotroph") degrade CLIP matching quality
-      - Project plan specifies 10k vocab; this targeted ~4k is well within that
+    Parameters
+    ----------
+    subset : str
+        "1k"   — 1,000 ImageNet-1k class names only. Directly covers every
+                 class in the 5,000-image activation cache; no noise from
+                 absent 21k synsets. Recommended when label quality matters.
+        "full" — 1k base + targeted ImageNet-21k additions filtered to
+                 visually concrete categories. Uses both a visual allowlist
+                 and a non-visual blocklist to minimise label pollution.
 
     Source: timm.data.imagenet_info.ImageNetInfo — no network access needed.
     timm bundles imagenet_synset_to_lemma.txt internally.
@@ -395,7 +375,9 @@ def _load_tier4_from_timm() -> list:
 
     Falls back to empty list if timm is not installed.
     """
-    # Visual keyword filter for 21k additions beyond ImageNet-1k
+    # ------------------------------------------------------------------ #
+    # Positive: substring keywords that signal visually concrete synsets  #
+    # ------------------------------------------------------------------ #
     VISUAL_KEYWORDS = [
         # Birds — heavily weighted; directly relevant to flamingo/spoonbill task
         'bird', 'finch', 'warbler', 'sparrow', 'hawk', 'eagle', 'owl', 'duck',
@@ -411,41 +393,110 @@ def _load_tier4_from_timm() -> list:
         'monkey', 'ape', 'rabbit', 'squirrel', 'mouse', 'rat',
         'snake', 'lizard', 'turtle', 'frog', 'salamander', 'gecko',
         'butterfly', 'moth', 'beetle', 'dragonfly', 'bee', 'wasp',
-        # Plants
+        'spider', 'crab', 'lobster', 'shrimp', 'insect', 'larva',
+        # Plants and fungi
         'oak', 'pine', 'maple', 'birch', 'willow', 'palm', 'fern',
         'moss', 'mushroom', 'flower', 'rose', 'tulip', 'orchid', 'lily',
-        # Natural materials and objects
+        'cactus', 'bamboo', 'seaweed', 'algae', 'lichen', 'fungus',
+        # Natural materials and scene elements
         'rock', 'stone', 'sand', 'mud', 'coral', 'shell', 'feather',
-        # Food
-        'fruit', 'berry', 'nut', 'seed',
+        'pebble', 'cliff', 'glacier', 'lava', 'crystal',
+        # Food and produce
+        'fruit', 'berry', 'nut', 'seed', 'vegetable', 'grain',
     ]
+
+    # ------------------------------------------------------------------ #
+    # Negative: whole-word matches that flag non-visual concepts          #
+    # Applied AFTER the visual allowlist — removes false positives.       #
+    # ------------------------------------------------------------------ #
+    # Words that, when present as a standalone token, indicate the concept
+    # is medical, taxonomic, abstract, or otherwise non-visual.
+    _BLOCK_WORDS = {
+        # Medical / pathological
+        "disease", "disorder", "syndrome", "infection", "deficiency",
+        "cancer", "tumor", "tumour", "fever", "virus", "bacteria",
+        "poisoning", "allergy", "toxin", "parasite", "pathology",
+        "symptom", "treatment", "therapy", "drug", "pharmaceutical",
+        # Abstract / conceptual / relational
+        "process", "phenomenon", "behavior", "behaviour", "relationship",
+        "mechanism", "function", "effect", "system", "method", "technique",
+        "theory", "principle", "concept", "ideology", "movement", "period",
+        "culture", "tradition", "language", "music", "dance", "style",
+        "ceremony", "ritual", "belief", "religion", "philosophy",
+        # Taxonomic rank indicators (scientific Latin names)
+        "genus", "phylum", "kingdom", "subspecies", "cultivar", "variety",
+        # Collective / generic group nouns that don't describe visual content
+        "complex", "clade", "lineage", "taxon",
+    }
+
+    # Name-ending patterns that reliably indicate taxonomic family/order names
+    # (e.g. "Muscicapidae", "Apocynaceae", "Passeriformes")
+    _BLOCK_SUFFIXES = (
+        "idae", "inae", "aceae", "ales", "iformes", "oidea",  # taxonomy
+        "osis", "itis", "emia", "uria",                        # medical
+        "ology", "ography", "onomy", "onomics",               # academic fields
+    )
+
+    def _is_acceptable_21k(name: str) -> bool:
+        """Return True if name passes all quality filters for 21k additions."""
+        lower = name.lower()
+        words = lower.split()
+
+        # Basic format checks
+        if len(name) < 3:
+            return False
+        if any(c.isdigit() for c in name):
+            return False
+        if len(words) > 3:
+            return False
+        if "_" in name or "/" in name or "(" in name:
+            return False
+
+        # Block by suffix (catches taxonomic family/order names)
+        if any(lower.endswith(sfx) for sfx in _BLOCK_SUFFIXES):
+            return False
+
+        # Block all-caps abbreviations (HIV, DNA, RNA, etc.)
+        if name.isupper() and len(name) <= 6:
+            return False
+
+        # Block by word content (catches medical, abstract, relational)
+        if any(w in _BLOCK_WORDS for w in words):
+            return False
+
+        # Must contain a visual keyword to be included from 21k
+        return any(kw in lower for kw in VISUAL_KEYWORDS)
 
     try:
         from timm.data.imagenet_info import ImageNetInfo
 
-        # Base: all ImageNet-1k class names (first lemma only)
+        # Base: all ImageNet-1k class names (first lemma only) — kept as-is
         info1k = ImageNetInfo('imagenet1k')
-        labels1k = [_normalize_label(l.split(',')[0])
+        labels1k = [l.split(',')[0].strip()
                     for l in info1k.label_descriptions(detailed=False)]
-        seen = set(labels1k)
         result = list(labels1k)
 
-        # Additions: visually concrete ImageNet-21k synsets not in 1k
+        if subset == "1k":
+            print(f"[vocab] Loaded {len(result)} labels from timm "
+                  f"(ImageNet-1k only) — Tier 4")
+            return result
+
+        # subset == "full": add filtered ImageNet-21k synsets not in 1k
+        seen = {l.lower() for l in labels1k}
         info21k = ImageNetInfo('imagenet-21k')
+        added = 0
         for label in info21k.label_descriptions(detailed=False):
-            first = _normalize_label(label.split(',')[0])
-            if first in seen:
+            first = label.split(',')[0].strip()
+            first_lower = first.lower()
+            if first_lower in seen:
                 continue
-            if len(first) < 3 or any(c.isdigit() for c in first):
-                continue
-            if len(first.split()) > 3:
-                continue
-            if any(kw in first for kw in VISUAL_KEYWORDS):
-                seen.add(first)
+            if _is_acceptable_21k(first):
+                seen.add(first_lower)
                 result.append(first)
+                added += 1
 
         print(f"[vocab] Loaded {len(result)} labels from timm "
-              f"(1k base + targeted 21k additions) — Tier 4")
+              f"(1k base + {added} targeted 21k additions) — Tier 4")
         return result
 
     except Exception as e:
@@ -459,33 +510,27 @@ def _load_tier4_from_timm() -> list:
 # PUBLIC API
 # =============================================================================
 
-def get_vocab(tiers: list = None, load_tier4: bool = True) -> list:
+def get_vocab(tiers: list = None, load_tier4: bool = True,
+              tier4_subset: str = "full") -> list:
     """
-    Return the full CLIP auto-labeling vocabulary.
+    Return the CLIP auto-labeling vocabulary.
 
     Parameters
     ----------
     tiers : list of int, optional
         Which tiers to include. Default: [1, 2, 3, 4].
-        Use [1, 2] for fast testing; [1, 2, 3, 4] for full labeling.
     load_tier4 : bool
-        Whether to load Tier 4 from timm's bundled synset files.
-        Requires timm to be installed (already in requirements.txt).
-        Set False only for unit testing without timm.
-
-    Returns
-    -------
-    list of str
-        Deduplicated vocabulary strings, ready to encode with CLIP.
+        Set False to skip Tier 4 entirely (unit testing without timm).
+    tier4_subset : str
+        "1k"   — ImageNet-1k only (1,000 strings). Covers every class in
+                 the 5,000-image activation cache with no 21k noise.
+        "full" — 1k base + ~2,900 targeted 21k additions (default).
 
     Example
     -------
-    >>> vocab = get_vocab()
-    >>> len(vocab)
-    ~5000
-    >>> vocab = get_vocab(tiers=[1, 2], load_tier4=False)
-    >>> len(vocab)
-    ~1000
+    >>> vocab = get_vocab()                                # ~5,000 strings
+    >>> vocab = get_vocab(tier4_subset="1k")              # ~2,300 strings
+    >>> vocab = get_vocab(tiers=[1, 2], load_tier4=False) # ~1,000 strings
     """
     if tiers is None:
         tiers = [1, 2, 3, 4]
@@ -498,12 +543,19 @@ def get_vocab(tiers: list = None, load_tier4: bool = True) -> list:
     if 3 in tiers:
         result.extend(TIER3)
     if 4 in tiers and load_tier4:
-        result.extend(_load_tier4_from_timm())
+        result.extend(_load_tier4_from_timm(subset=tier4_subset))
 
-    deduped = _dedupe_normalized(result)
+    # Final deduplication across all tiers
+    seen = set()
+    deduped = []
+    for s in result:
+        key = s.lower().strip()
+        if key not in seen and len(key) >= 3:
+            seen.add(key)
+            deduped.append(s)
 
     print(f"[vocab] Total vocabulary: {len(deduped)} strings "
-          f"(tiers: {tiers})")
+          f"(tiers: {tiers}, tier4_subset: {tier4_subset!r})")
     return deduped
 
 
@@ -517,10 +569,10 @@ def get_vocab_by_tier() -> dict:
     dict mapping tier int -> list of strings
     """
     return {
-        1: _dedupe_normalized(TIER1),
-        2: _dedupe_normalized(TIER2),
-        3: _dedupe_normalized(TIER3),
-        4: _dedupe_normalized(_load_tier4_from_timm()),
+        1: TIER1,
+        2: TIER2,
+        3: TIER3,
+        4: _load_tier4_from_timm(),
     }
 
 

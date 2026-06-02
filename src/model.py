@@ -58,11 +58,31 @@ def _remap_dino_keys(state_dict):
 
 
 def _patched_load_dino_weights(model_name, dtype, **kwargs):
-    from transformers import ViTModel
-    model = ViTModel.from_pretrained(model_name, torch_dtype=dtype, **kwargs)
-    for p in model.parameters():
-        p.requires_grad = False
-    return _remap_dino_keys(model.state_dict())
+    """Load DINO ViT weights directly, bypassing transformers' from_pretrained.
+
+    transformers >= 5.x refuses torch.load on torch < 2.6 (CVE-2025-32434) even
+    with weights_only=True, which breaks facebook/dino-vitb16 because its `main`
+    revision only ships pytorch_model.bin. We sidestep that gate by fetching the
+    checkpoint ourselves: prefer safetensors, else torch.load(weights_only=True),
+    which is safe on torch 2.5.x. The raw checkpoint keys are already in the
+    `encoder.layer.N...` layout convert_dino_weights expects; _remap_dino_keys is
+    a no-op here but kept in case a future revision uses the renamed layout.
+    """
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError
+
+    revision = kwargs.get("revision")
+    try:
+        from safetensors.torch import load_file
+        path = hf_hub_download(model_name, "model.safetensors", revision=revision)
+        state_dict = load_file(path)
+    except EntryNotFoundError:
+        path = hf_hub_download(model_name, "pytorch_model.bin", revision=revision)
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
+
+    if dtype is not None:
+        state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+    return _remap_dino_keys(state_dict)
 
 
 _model_loader._load_dino_weights = _patched_load_dino_weights
