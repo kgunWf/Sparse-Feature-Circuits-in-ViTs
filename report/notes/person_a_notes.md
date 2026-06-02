@@ -123,9 +123,69 @@ Commit updates regularly so the team can follow your progress.
 
 ### Decisions
 
+- **Two-pass importance ranking in `compute_feature_importance()`.**
+  Naive approach (ablate all 49,152 features × n_batches forward passes) is intractable.
+  Instead:
+  - **Pass 1 — gradient pre-ranking.** One forward+backward per batch ranks *all* d_sae
+    features at once. Encode the cached activations → SAE features, set `requires_grad`
+    on them, decode back to the residual stream, inject at `blocks.9.hook_resid_post`,
+    forward, and backprop the flamingo−spoonbill logit diff. Accumulate the proxy score
+    `|∂logit_diff/∂feat| × |feat|` per feature, averaged over tokens/images. Cost is
+    O(n_batches), independent of d_sae.
+  - **Pass 2 — exact ablation.** Only the top `cfg.causal.grad_top_k` (200) candidates
+    from Pass 1 are individually ablated and re-run to measure the *exact* logit-diff
+    drop. Cost O(grad_top_k × n_batches).
+  Final `importance[f] = mean(baseline_diff − ablated_diff)`; positive ⇒ feature promotes
+  flamingo, negative ⇒ promotes spoonbill, zero ⇒ not in the top-k (never ablated).
+
+- **Activation-injection trick: forward pass on a zeros input.**
+  Both passes call `run_with_hooks(torch.zeros(...), fwd_hooks=[(hook_key, _hook)])`.
+  The model runs on a dummy zeros image, but the layer-9 `hook_resid_post` hook overwrites
+  the residual stream with our decoded/ablated activations, so layers 10–11 compute on the
+  injected value. This lets us evaluate from cached activations without needing the original
+  pixels — only the residual stream at the primary layer matters for the downstream logits.
+
+- **Baseline diffs computed once, reused across all 200 candidates.**
+  Pass 2 computes `baseline_diffs` (no ablation, just re-inject the unmodified batch) a single
+  time before the candidate loop, rather than per-feature. Saves ~200× redundant forward passes.
+
+- **`get_top_causal_features()` thresholds over ablated features only.**
+  Percentile (`cfg.causal.importance_percentile`, default 80) is computed over the non-zero
+  (ablated) entries via `torch.quantile`, not all 49k. Features outside grad_top_k have
+  importance == 0 and are always excluded. `percentile` arg overrides config when passed.
+
 ### Findings
 
+- **Hook callback signature bug — hooks must accept a `hook=` keyword.**
+  vit_prisma's `HookPoint.full_hook` invokes registered forward hooks as
+  `hook(module_output, hook=self)`. The original closures used `def _hook(*_, _r=recon)`,
+  which only catches positional args, so the `hook=` keyword raised
+  `TypeError: unexpected keyword argument 'hook'` (notebook 03 cell 4 / `src/causal.py:132`).
+  Fixed all three closures to `def _hook(*_, _r=..., **__)` — `**__` absorbs the keyword.
+  → Any future hook closure in this file must absorb `**kwargs` (or take an explicit `hook`
+  param, as the notebook-01 `zero_hook` does).
+
+- **Verified dataset: 181 flamingo + 148 spoonbill = 329 images** correctly classified
+  (out of 200 + 200 fetched). act shapes `(181, 197, 768)` and `(148, 197, 768)`, kept on CPU.
+  Pass 1 ran 42 batches (`cfg.causal.logit_diff_batch_size = 8`).
+
+- **Ranking results (layer 9), saved to `outputs/features/importance_layer9.pt`:**
+  - 200 candidates ablated; max |importance| = 0.3780.
+  - Top-5 features: 17825 (0.378), 32842 (0.325), 30072 (0.266), 40410 (0.258), 49054 (0.232).
+  - 40 features pass the 80th-percentile cut → `top_features` for the ablation-ranking plot
+    and downstream CaFE / circuit work.
+  - Result is cached; re-running cell 4 loads from disk instead of recomputing. **Delete the
+    `.pt` if the importance code changes**, or the stale cache is silently reused.
+
 ### Blockers
+
+- **CaFE sanity check (`cafe_sanity_check`) is Person B's and still a `NotImplementedError`.**
+  Notebook 03 cell 4 (section 4) stays commented out until that lands. My importance output
+  (`top_features[:10]`) is the input it depends on — already saved, so Person B is unblocked.
+
+- **Still running on DINO v1 (patch16, 197 tokens), not DINOv2-reg.** Carried over from Week 1
+  — all causal results above are for the DINO v1 stand-in. If the group switches models, the
+  importance ranking must be recomputed against the new SAEs.
 
 ---
 
