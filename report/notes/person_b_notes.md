@@ -4,34 +4,84 @@
 
 ### Decisions
 
-- [x] Concept vocabulary is explicit input to `label_feature_clip`.
-      Week 1 now builds a 10k English concept vocabulary with targeted
-      visual terms prepended, instead of using the toy 25-word notebook list.
-- [x] CLIP labels use resized model-space images and CLIP-sized crops
-      centered on the top-activating patch, not raw 16x16 patch crops.
-- [x] Token layout is config-derived: CLS at 0 and patch tokens from
-      `1..grid_size^2`. Current DINO v1 has no register tokens.
-- [x] Full-cache all-feature top-patch retrieval is streaming over cache
-      batches, so it can run on all 5,000 images without materialising the
-      entire `(images, tokens, d_sae)` tensor.
+- [x] Concept vocabulary is explicit input to `label_feature_clip` and `label_features_clip`.
+      Lives in `utils/clip_vocab.py` (not `features.py`) as a 4-tier structured vocab:
+      Tier 1 textures/colors/shapes (~600), Tier 2 body parts (~400), Tier 3 scenes (~300),
+      Tier 4 ImageNet-1k or filtered 21k labels (~1k–3.9k). Notebook uses `tier4_subset="1k"`
+      for a cleaner ~2.3k vocab with no 21k noise.
+- [x] CLIP labels use resized model-space images and CLIP-sized crops centered on the
+      top-activating patch (`context_size=96` px in 224px space → ~6×6 patch neighbourhood),
+      not raw 16×16 patch crops. Passing `context_size=224` returns the full image every time
+      because `_centered_square_box` clamps to (0,0,224,224); the guard in `crop_clip_images`
+      enforces `context_size <= image_size - patch_size`.
+- [x] Token layout is config-derived: CLS at index 0, patch tokens 1..196 for DINO v1
+      ViT-B/16 (14×14 grid, no register tokens). `_patch_layout` infers grid size from
+      `seq_len` and validates against config.
+- [x] Full-cache all-feature top-patch retrieval streams over activation cache in batches
+      of `batch_size` images (default 64), keeping only `(k, d_sae)` running top-k
+      accumulators on CPU. The full `(n_images, seq_len, d_sae)` tensor is never materialised
+      (~45 GB for 5k images at d_sae=49152; streaming peak is ~2.4 GB GPU).
+- [x] `make_patch_grid` lives in `src/visualise.py`, not `features.py`. The split:
+      PIL composite image (visualise) vs. matplotlib Figure (visualise.plot_feature_gallery).
+      `crop_patch_images` and `crop_clip_images` remain in `features.py` as data-layer helpers.
+- [x] `compute_monosemanticity_score` takes `patch_embeddings` as a required positional
+      argument (no `clip_model` / `processor`). The slow CLIP-encoding path is removed.
+      Caller must run `precompute_patch_embeddings` first.
+- [x] Two thresholds kept strictly separate in `configs/default.yaml`:
+      `sae.dead_feature_threshold: 0.01` — algorithmic, marks truly dormant features in MS score.
+      `features.min_activation_threshold: 1.0` — analytical, gates reliable CLIP labels/gallery.
+      `features.ms_max_patches: 5` — top-5 patches per feature for Pach et al. Eq. 9
+      (wider distribution than top-20; patches 6-20 dilute the pairwise similarity signal).
+
+### Efficiency and caching design
+
+The pipeline produces four independently cacheable artifacts under `outputs/features/`:
+
+| Artifact | File | Reuse condition |
+|---|---|---|
+| Top-k patches | `top_patches_layer{N}_full.pkl.gz` | Rebuild if `top_k_patches`, layer, or dataset changes |
+| Patch embeddings | In-memory only (`patch_embeddings` dict) | Recomputed each kernel session from the pkl; ~20 min on A100 |
+| CLIP labels | `clip_labels_layer{N}_full.json` | Rebuild if vocab or `top_n` changes; seconds with precomputed embeddings |
+| MS scores | `ms_scores_layer{N}_top{K}.json` | Rebuild if `ms_max_patches` changes; seconds with precomputed embeddings |
+
+**Why `patch_embeddings` is not persisted to disk:** The dict maps `(image_path, row, col)` tuples to 512-d float32 tensors. For 5k images × 196 patch tokens = ~980k entries × 2 KB each ≈ 1.9 GB. Saving and loading this is slower than re-encoding (~20 min) and the pkl.gz already holds the top-k patch metadata needed to reconstruct it. Callers that need it across sessions should pickle it themselves.
+
+**Why top-patches pkl uses gzip:** The raw dict of 49k × 20 patch-dicts is ~200 MB uncompressed. gzip brings it to ~15–20 MB, which matters on Colab where `/content` disk is limited.
+
+**Cross-machine path portability:** The pkl stores absolute image paths from the machine where it was built (e.g. `/home/gunaydin/...`). The notebook remaps paths by filename on load:
+```python
+_name_to_local = {Path(p).name: p for p in image_paths}
+for _p in all_top_patches.values():
+    if not Path(_p["image_path"]).exists():
+        _p["image_path"] = _name_to_local.get(Path(_p["image_path"]).name, _p["image_path"])
+```
+This is notebook-level logic (not in `features.py`) because it depends on the local `image_paths` list built during cache loading.
+
+**`precompute_patch_embeddings` is the critical fast path:** Without it, `label_features_clip` and `compute_monosemanticity_score` would each do ~49k × 20 = 980k CLIP image encoder calls (≈1 hour each). With it, all unique `(image, row, col)` crops are encoded exactly once in batches of 256, then both label and MS score steps run in seconds via dict lookup.
 
 ### Findings
-- Implemented top-patch retrieval for single features and all features.
-  The full all-feature path keeps only top-k entries per feature while
-  scanning cached activations in small batches.
-- Implemented CLIP label loading and patch-crop concept labeling with
-  cached text embeddings.
-- Week 1 notebook is configured to run the all-feature top-patch scan on
-  all cached images and cache the result under `outputs/features/`.
-- Week 1 notebook can also run full-feature CLIP labeling with the 10k
-  vocabulary and cache `clip_labels_layer{layer}_full.json` under
-  `outputs/features/`.
-- CLIP labels are usable as first-pass hints, but should be checked
-  against patch grids because auto-labeling is only a semantic proxy.
 
-### Remaining Checks
-- Run a small manual review over several features before treating the
-  CLIP labels as final semantic annotations.
+- Implemented top-patch retrieval for single features and all features.
+  The all-feature path keeps only top-k entries per feature while scanning cached
+  activations in small batches; accumulators live on CPU between batches.
+- Implemented CLIP label loading and patch-crop concept labeling with cached text embeddings.
+  `_text_embeddings` caches by `(model_id, device, vocab_tuple)` — switching vocab or device
+  invalidates the cache automatically.
+- Week 1 notebook runs the all-feature top-patch scan on all cached images and caches
+  the result under `outputs/features/`. CLIP labeling and MS scores also cached there.
+- MS score uses Pach et al. 2025 Eq. 9 exactly: pairwise CLIP image similarity weighted
+  by min-max-normalised activation products. Features with max activation ≤ 0.01 get `nan`
+  (dead). Features with < 2 patches in `patch_embeddings` also get `nan`.
+- Feature gallery (top 50 by MS) filtered by both `min_activation_threshold` and
+  `ms_max_patches` support to avoid the MS=1.0 artefact spike from low-support features.
+
+### Remaining checks
+
+- Manual annotation of top-50 gallery: assign texture / color / part / scene / semantic / unclear.
+  Save to `report/notes/feature_catalog_layer9.md`.
+- Repeat top-patch retrieval and CLIP labeling for layers 4 and 6 (Week 2 dependency).
+- Confirm CLIP labels are sensible for ≥ 60% of inspected features before treating as
+  first-pass semantic annotations.
 
 ---
 
