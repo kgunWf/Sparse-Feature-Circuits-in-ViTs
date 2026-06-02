@@ -126,8 +126,8 @@ def compute_feature_importance(
         feat_v = feat.detach().requires_grad_(True)
         recon  = decode(feat_v, layer)              # (bs, seq_len, d_model) — has grad_fn
 
-        def _hook(*_, _r=recon):                      # default-arg captures current recon
-            return _r
+        def _hook(*_, _r=recon, **__):                # default-arg captures current recon
+            return _r                                 # **__ absorbs the hook= kwarg
 
         logits    = model.run_with_hooks(
             torch.zeros(batch.shape[0], *img_shape, device=device),
@@ -149,7 +149,7 @@ def compute_feature_importance(
     baseline_diffs = []
     for i in range(0, n_total, batch_size):
         batch = all_acts[i:i + batch_size].to(device)
-        def _hook(*_, _b=batch):
+        def _hook(*_, _b=batch, **__):
             return _b
         with torch.no_grad():
             logits = model.run_with_hooks(
@@ -168,7 +168,7 @@ def compute_feature_importance(
         for i in range(0, n_total, batch_size):
             batch   = all_acts[i:i + batch_size].to(device)
             ablated = ablate_feature(batch, f, layer)
-            def _hook(*_, _a=ablated):
+            def _hook(*_, _a=ablated, **__):
                 return _a
             with torch.no_grad():
                 logits = model.run_with_hooks(
