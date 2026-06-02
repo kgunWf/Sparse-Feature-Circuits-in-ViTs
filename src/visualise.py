@@ -74,8 +74,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image, ImageDraw
 
 from src.config import get_config
+from src.features import crop_patch_images
 
 _FIG_DPI = 150
 
@@ -128,6 +130,59 @@ def plot_monosemanticity_distribution(
     return _save(fig, save_path)
 
 
+def make_patch_grid(
+    feature_patches: dict[int, list[dict]],
+    labels: dict[int, list[str]] | None = None,
+    context_patches: int = 2,
+    crop_size: int = 128,
+    max_patches: int | None = None,
+) -> Image.Image:
+    """Render a visual inspection grid — one row per feature.
+
+    Each row shows the feature index + CLIP labels in a left panel, then
+    ``max_patches`` image crops with the active patch outlined in red.
+
+    Args:
+        feature_patches: ``{feature_idx: [patch dicts]}`` from
+            :func:`src.features.get_top_patches_all_features`.
+        labels: optional ``{feature_idx: ["label1", ...]}`` from
+            :func:`src.features.label_features_clip`.
+        context_patches: neighbour patches to include around the active patch.
+        crop_size: pixel size to resize each crop to in the output image.
+        max_patches: max patches per row (defaults to ``cfg.features.top_k_patches``).
+
+    Returns:
+        A PIL Image suitable for ``display()`` in a Jupyter cell.
+    """
+    cfg = get_config()
+    _max = max_patches or cfg.features.top_k_patches
+    labels = labels or {}
+    items = list(feature_patches.items())
+    if not items:
+        return Image.new("RGB", (320, 80), "white")
+
+    label_w = 260
+    row_h = crop_size + 42
+    grid = Image.new("RGB", (label_w + _max * crop_size, row_h * len(items)), "white")
+    draw = ImageDraw.Draw(grid)
+
+    for row_idx, (feat_idx, patches) in enumerate(items):
+        y = row_idx * row_h
+        title = f"feature {feat_idx}"
+        if feat_idx in labels:
+            title += " | " + ", ".join(labels[feat_idx])
+        draw.text((8, y + 8), title, fill="black")
+        acts_str = ", ".join(f"{p['activation_value']:.2f}" for p in patches[:_max])
+        draw.text((8, y + 28), "acts: " + acts_str, fill="black")
+
+        for col_idx, crop in enumerate(
+            crop_patch_images(patches[:_max], context_patches=context_patches, mark_patch=True)
+        ):
+            grid.paste(crop.resize((crop_size, crop_size)), (label_w + col_idx * crop_size, y))
+
+    return grid
+
+
 def plot_feature_gallery(
     all_top_patches: dict[int, list[dict]],
     feature_indices: list[int],
@@ -140,9 +195,9 @@ def plot_feature_gallery(
 ) -> plt.Figure:
     """Matplotlib figure wrapping make_patch_grid for the top-50 gallery.
 
-    Delegates crop rendering to :func:`src.features.make_patch_grid` and
-    embeds the resulting PIL image in a matplotlib figure so it can be
-    saved at report quality and displayed inline in Jupyter.
+    Delegates crop rendering to :func:`make_patch_grid` and embeds the
+    resulting PIL image in a matplotlib figure so it can be saved at report
+    quality and displayed inline in Jupyter.
 
     Args:
         all_top_patches: full top-patches dict from get_top_patches_all_features.
@@ -154,8 +209,6 @@ def plot_feature_gallery(
         max_patches: patches per feature row (defaults to cfg.features.top_k_patches).
         save_path: if given, save as PNG.
     """
-    from src.features import make_patch_grid
-
     labels = labels or {}
     scores = scores or {}
 

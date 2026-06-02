@@ -16,8 +16,6 @@ label_features_clip        — label all features with progress bar
 compute_monosemanticity_score — MS per Pach et al. 2025, Eq. 9
 crop_clip_images           — 224px centered crops for CLIP encoding
 crop_patch_images          — contextual crops for visual inspection grids
-make_patch_grid            — visual inspection grid (one row per feature)
-
 Depends on: src/config.py, src/sae.py
 Used by:    notebooks/02_feature_analysis.ipynb,
             notebooks/03_causal_features.ipynb
@@ -484,10 +482,8 @@ def label_feature_clip(
 
 def compute_monosemanticity_score(
     all_top_patches: dict[int, list[dict]],
-    clip_model,
-    processor,
+    patch_embeddings: dict[tuple, torch.Tensor],
     max_patches: int = 20,
-    patch_embeddings: dict | None = None,
 ) -> dict[int, float]:
     """Compute the Monosemanticity Score per feature (Pach et al. 2025, Eq. 9).
 
@@ -497,16 +493,16 @@ def compute_monosemanticity_score(
       ã^k_n     activation of feature k for patch n, min-max normalised to [0,1]
       r^k_{nm}  ã^k_n × ã^k_m  (shared-activation relevance weight)
 
-    Pass ``patch_embeddings`` (from :func:`precompute_patch_embeddings`) to skip
-    per-feature CLIP encoding — drops runtime from ~1 hour to seconds.
+    ``patch_embeddings`` must come from :func:`precompute_patch_embeddings`.
+    Call that function first — it encodes every unique patch crop once and
+    returns a ``{(image_path, patch_row, patch_col): tensor}`` lookup dict.
 
     MS → 1: patches visually similar → monosemantic.
     MS → 0: patches visually diverse → polysemantic.
-    nan: dead feature (< 2 activating patches).
+    nan: dead feature (< 2 activating patches with precomputed embeddings).
     """
     cfg = get_config()
     dead_threshold = cfg.sae.dead_feature_threshold
-    device = _model_device(clip_model)
     scores: dict[int, float] = {}
 
     for feat_idx, patches in tqdm(all_top_patches.items(), desc="MS scores"):
@@ -519,14 +515,11 @@ def compute_monosemanticity_score(
             scores[feat_idx] = float("nan")
             continue
 
-        valid = [p for p in patches if p.get("patch_row") is not None][:max_patches]
-
-        # When using precomputed embeddings, keep only patches that are in the dict
-        if patch_embeddings is not None:
-            valid = [
-                p for p in valid
-                if (p["image_path"], p["patch_row"], p["patch_col"]) in patch_embeddings
-            ]
+        valid = [
+            p for p in patches
+            if p.get("patch_row") is not None
+            and (p["image_path"], p["patch_row"], p["patch_col"]) in patch_embeddings
+        ][:max_patches]
 
         if len(valid) < 2:
             scores[feat_idx] = float("nan")
@@ -539,22 +532,10 @@ def compute_monosemanticity_score(
             continue
         acts_norm = (acts - a_min) / (a_max - a_min)
 
-        if patch_embeddings is not None:
-            emb = torch.stack([
-                patch_embeddings[(p["image_path"], p["patch_row"], p["patch_col"])]
-                for p in valid
-            ])  # already normalised
-        else:
-            crops = crop_patch_images(valid, context_patches=2, mark_patch=False)
-            if len(crops) < 2:
-                scores[feat_idx] = float("nan")
-                continue
-            image_inputs = processor(images=crops, return_tensors="pt")
-            with torch.no_grad():
-                emb = _clip_features(
-                    clip_model.get_image_features(**_to_device(image_inputs, device))
-                )
-            emb = F.normalize(emb.float(), dim=-1).cpu()
+        emb = torch.stack([
+            patch_embeddings[(p["image_path"], p["patch_row"], p["patch_col"])]
+            for p in valid
+        ])  # already normalised by precompute_patch_embeddings
 
         n = emb.shape[0]
         idx_i, idx_j = torch.triu_indices(n, n, offset=1)
@@ -629,59 +610,6 @@ def label_features_clip(
             result[feat_idx] = [vocab[idx] for idx in top_idxs]
 
     return result
-
-
-def make_patch_grid(
-    feature_patches: dict[int, list[dict]],
-    labels: dict[int, list[str]] | None = None,
-    context_patches: int = 2,
-    crop_size: int = 128,
-    max_patches: int | None = None,
-) -> "Image.Image":
-    """Render a visual inspection grid — one row per feature.
-
-    Each row shows the feature index + CLIP labels in a left panel, then
-    ``max_patches`` image crops with the active patch outlined in red.
-
-    Args:
-        feature_patches: ``{feature_idx: [patch dicts]}`` from
-            :func:`get_top_patches_all_features`.
-        labels: optional ``{feature_idx: ["label1", ...]}`` from
-            :func:`label_features_clip`.
-        context_patches: neighbour patches to include around the active patch.
-        crop_size: pixel size to resize each crop to in the output image.
-        max_patches: max patches per row (defaults to ``cfg.features.top_k_patches``).
-
-    Returns:
-        A PIL Image suitable for ``display()`` in a Jupyter cell.
-    """
-    cfg = get_config()
-    _max = max_patches or cfg.features.top_k_patches
-    labels = labels or {}
-    items = list(feature_patches.items())
-    if not items:
-        return Image.new("RGB", (320, 80), "white")
-
-    label_w = 260
-    row_h = crop_size + 42
-    grid = Image.new("RGB", (label_w + _max * crop_size, row_h * len(items)), "white")
-    draw = ImageDraw.Draw(grid)
-
-    for row_idx, (feat_idx, patches) in enumerate(items):
-        y = row_idx * row_h
-        title = f"feature {feat_idx}"
-        if feat_idx in labels:
-            title += " | " + ", ".join(labels[feat_idx])
-        draw.text((8, y + 8), title, fill="black")
-        acts_str = ", ".join(f"{p['activation_value']:.2f}" for p in patches[:_max])
-        draw.text((8, y + 28), "acts: " + acts_str, fill="black")
-
-        for col_idx, crop in enumerate(
-            crop_patch_images(patches[:_max], context_patches=context_patches, mark_patch=True)
-        ):
-            grid.paste(crop.resize((crop_size, crop_size)), (label_w + col_idx * crop_size, y))
-
-    return grid
 
 
 def crop_patch_images(
