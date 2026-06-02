@@ -32,19 +32,23 @@ data:
   behavior_class_a: "flamingo"
   behavior_class_b: "spoonbill"
   behavior_n_images: 200
+  flamingo_logit_idx: 1 # class-1 slot in the 2-class model head (confirmed notebook 01)
+  spoonbill_logit_idx: 0 # class-0 slot in the 2-class model head
 
 # --- Features ---
 features:
   top_k_patches: 20
   clip_model: "openai/clip-vit-base-patch32"
+  clip_context_size: 96 # px crop window (in model image space) centered on each patch before upscaling to CLIP input size
   monosemanticity_top_n: 50
-  min_activation_threshold: 1.0  # min peak activation for reliable CLIP labels (not the same as sae.dead_feature_threshold)
-  ms_max_patches: 5              # patches used per feature in Pach et al. Eq. 9
+  min_activation_threshold: 0.5 # min peak activation for reliable CLIP labels (not the same as sae.dead_feature_threshold)
+  ms_max_patches: 5 # patches used per feature in Pach et al. Eq. 9
 
 # --- Causal analysis ---
 causal:
   logit_diff_batch_size: 8
-  importance_percentile: 80
+  importance_percentile: 80 # percentile threshold applied to ablated candidates in get_top_causal_features
+  grad_top_k: 200 # features to carry from gradient pre-ranking into the exact ablation pass
   min_circuit_nodes: 5
 
 # --- Circuit ---

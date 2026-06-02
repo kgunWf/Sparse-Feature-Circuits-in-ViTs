@@ -7,104 +7,212 @@ Two distinct responsibilities in this file — coordinate before coding:
   Person A owns: compute_feature_importance(), get_top_causal_features()
   Person B owns: cafe_sanity_check()
 
-Public API (implement these)
------------------------------
+Public API
+----------
 
 --- Person A ---
 
 compute_feature_importance(layer, class_a_activations,
                            class_b_activations, model) -> torch.Tensor
-    For every SAE feature at the given layer, measure its causal
-    importance for the flamingo-vs-spoonbill classification by
-    ablation (zeroing the feature) and measuring the resulting
-    change in logit difference.
+    Two-pass approach:
 
-    logit_diff = logit(class_a) - logit(class_b)
+    Pass 1 — gradient pre-ranking (O(n_batches), independent of d_sae):
+        For each image batch, set requires_grad on SAE feature activations,
+        decode back to residual stream, inject via hook, forward + backward.
+        Accumulates |∂logit_diff/∂feat| × |feat| per feature over all batches.
+        Ranks all d_sae features without a single ablation call.
 
-    Importance of feature f =
-        mean_over_images( logit_diff_original - logit_diff_with_f_ablated )
+    Pass 2 — exact ablation (O(grad_top_k × n_batches)):
+        Ablates only the top cfg.causal.grad_top_k candidates from Pass 1.
+        Measures exact logit_diff drop for each candidate.
 
-    A high positive score means feature f contributes positively to
-    predicting class_a over class_b.
-
-    activations: output of cache.load_layer() for each class.
-    model: the HookedViT from model.get_model().
-    Returns a 1D tensor of shape (d_sae,) with importance scores.
-
-    Implementation notes:
-    - Use sae.ablate_feature() as the primitive.
-    - Process images in batches (cfg.causal.logit_diff_batch_size)
-      to avoid OOM on Colab.
-    - For each image, re-inject the modified activations into the
-      model's residual stream at the correct layer using Prisma's
-      hooks, then read off the logits.
-    - Use tqdm for progress.
+    Returns a 1D tensor of shape (d_sae,) — non-zero only for ablated features.
 
 get_top_causal_features(importance_scores, layer,
                         percentile=None) -> list[int]
-    Return the indices of features whose importance score is above
-    cfg.causal.importance_percentile (default 80th percentile).
-    percentile argument overrides config if provided.
+    Return indices above cfg.causal.importance_percentile of the ablated
+    candidates. percentile argument overrides config if provided.
 
 --- Person B ---
 
 cafe_sanity_check(layer, feature_idx, activations,
                   image_paths, model) -> dict
-    CaFE-style comparison: for a given SAE feature, compare the
-    spatial location of maximum activation (the "top patch") against
-    the location of maximum gradient attribution (the causally
-    responsible patch).
+    CaFE-style comparison: compare the spatial location of maximum SAE
+    activation (top patch) against the location of maximum gradient
+    attribution (causally responsible patch).
 
-    Reference: Han, Kim, Kwak (2025). CaFE: Causal Interpretation of
-    Sparse Autoencoder Features in Vision. arXiv:2509.00749.
+    Reference: Han, Kim, Kwak (2025). CaFE. arXiv:2509.00749.
 
     Steps:
-        1. Encode activations to get SAE feature map (n, seq_len).
-        2. For each image, find the patch token with max activation
-           for this feature -> "activation location".
-        3. For each image, compute gradient of the feature's activation
-           (summed over tokens) w.r.t. the input pixel values using
-           torch.autograd. Map gradient magnitudes back to patch grid
-           -> "gradient location".
-        4. Measure spatial agreement: are the two locations the same
-           patch? Compute agreement rate over the top-k images.
+        1. Encode activations → SAE feature map (n, seq_len).
+        2. Per image: find patch token with max activation → activation location.
+        3. Per image: compute gradient of feature activation (summed over tokens)
+           w.r.t. input pixels via torch.autograd. Map gradient magnitudes to
+           patch grid → gradient location.
+        4. Spatial agreement rate over top-k images.
 
-    Returns a dict with:
-        activation_locations:  list of (row, col) per image
-        gradient_locations:    list of (row, col) per image
-        agreement_rate:        float in [0, 1]
-        example_images:        list of image paths for visualisation
+    Returns dict:
+        activation_locations  list of (row, col) per image
+        gradient_locations    list of (row, col) per image
+        agreement_rate        float in [0, 1]
+        example_images        list of image paths for visualisation
 
-Implementation notes (shared)
-------------------------------
-- The key question for re-injection (Person A): how does Prisma's
-  run_with_cache handle modified activations? Read Prisma docs on
-  hook-based interventions before implementing.
-- For cafe_sanity_check (Person B): gradient computation requires
-  model inputs with requires_grad=True and a full forward pass
-  through the model (not from cached activations).
+    Note: gradient computation requires model inputs with requires_grad=True
+    and a full forward pass from pixels — not from cached activations.
 
 Depends on: src/config.py, src/model.py, src/sae.py, src/cache.py
 Used by:    notebooks/03_causal_features.ipynb
 """
 
-# TODO (Person A, Week 2 Days 8–10):
-#   0. Verify model.run_with_hooks() in notebook 01 BEFORE writing any code here.
-#      Hook signature: fwd_hooks=[(hook_name, fn)] where fn(value, hook) -> tensor.
-#   1. Implement compute_feature_importance() with a two-pass approach:
-#      Pass 1 — gradient ranking: one backward pass of logit_diff w.r.t. SAE
-#               feature activations → importance ∝ |grad| × |feature_act|.
-#               This ranks all d_sae features in O(1) backward passes.
-#      Pass 2 — ablation confirmation: run ablate_feature() only on top-K candidates
-#               to get exact importance scores for the final ranking.
-#      Do NOT loop ablate_feature() over all 3072 features — that is 3072 forward
-#      passes per layer and will take ~30 min on CPU.
-#   2. Implement get_top_causal_features().
-#   3. Run on layers 6, 9, 11 and save ranked lists to outputs/.
-#
+from __future__ import annotations
+
+import math
+
+import torch
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    def tqdm(iterable, **_):
+        return iterable
+
+from src.config import get_config
+from src.sae import encode, decode, ablate_feature
+
+
+def compute_feature_importance(
+    layer: int,
+    class_a_activations: torch.Tensor,
+    class_b_activations: torch.Tensor,
+    model,
+) -> torch.Tensor:
+    """
+    Measure causal importance of every SAE feature at ``layer`` for the
+    flamingo-vs-spoonbill logit difference.
+
+    importance[f] = mean_over_images(logit_diff_original - logit_diff_ablated_f)
+
+    Positive score: feature promotes flamingo over spoonbill.
+    Negative score: feature promotes spoonbill over flamingo.
+    Zero: feature was not in the top-grad_top_k candidates (not ablated).
+
+    Returns: torch.Tensor shape (d_sae,)
+    """
+    cfg = get_config()
+    batch_size    = cfg.causal.logit_diff_batch_size
+    grad_top_k    = cfg.causal.grad_top_k
+    flamingo_idx  = cfg.data.flamingo_logit_idx
+    spoonbill_idx = cfg.data.spoonbill_logit_idx
+    hook_key      = f"blocks.{layer}.hook_resid_post"
+    device        = next(model.parameters()).device
+    img_shape     = (3, cfg.model.image_size, cfg.model.image_size)
+
+    all_acts = torch.cat([class_a_activations, class_b_activations], dim=0)
+    n_total  = all_acts.shape[0]
+
+    with torch.no_grad():
+        d_sae = encode(all_acts[:1].to(device), layer).shape[2]
+
+    # ── Pass 1: gradient pre-ranking ─────────────────────────────────────────
+    # One forward+backward per batch ranks all d_sae features simultaneously.
+    # Importance proxy: |∂logit_diff/∂feat| × |feat|, averaged over tokens/images.
+    grad_scores = torch.zeros(d_sae)
+
+    for i in tqdm(range(0, n_total, batch_size), desc="Pass 1 — gradient ranking"):
+        batch = all_acts[i:i + batch_size].to(device)
+
+        with torch.no_grad():
+            feat = encode(batch, layer)             # (bs, seq_len, d_sae)
+        feat_v = feat.detach().requires_grad_(True)
+        recon  = decode(feat_v, layer)              # (bs, seq_len, d_model) — has grad_fn
+
+        def _hook(*_, _r=recon):                      # default-arg captures current recon
+            return _r
+
+        logits    = model.run_with_hooks(
+            torch.zeros(batch.shape[0], *img_shape, device=device),
+            fwd_hooks=[(hook_key, _hook)],
+        )
+        logit_diff = (logits[:, 0, flamingo_idx] - logits[:, 0, spoonbill_idx]).mean()
+        logit_diff.backward()
+
+        with torch.no_grad():
+            grad_scores += (feat_v.grad.abs() * feat.abs()).mean(dim=(0, 1)).cpu()
+
+        del feat, feat_v, recon, logits, logit_diff
+
+    grad_scores /= math.ceil(n_total / batch_size)
+    top_k_idx = torch.topk(grad_scores, k=min(grad_top_k, d_sae)).indices.tolist()
+
+    # ── Pass 2: exact ablation on top-K candidates ────────────────────────────
+    # Compute baseline logit diffs once — reused for every candidate.
+    baseline_diffs = []
+    for i in range(0, n_total, batch_size):
+        batch = all_acts[i:i + batch_size].to(device)
+        def _hook(*_, _b=batch):
+            return _b
+        with torch.no_grad():
+            logits = model.run_with_hooks(
+                torch.zeros(batch.shape[0], *img_shape, device=device),
+                fwd_hooks=[(hook_key, _hook)],
+            )
+        baseline_diffs.append(
+            (logits[:, 0, flamingo_idx] - logits[:, 0, spoonbill_idx]).cpu()
+        )
+    baseline_diffs = torch.cat(baseline_diffs)      # (n_total,)
+
+    importance = torch.zeros(d_sae)
+
+    for f in tqdm(top_k_idx, desc=f"Pass 2 — ablation (top {grad_top_k})"):
+        ablated_diffs = []
+        for i in range(0, n_total, batch_size):
+            batch   = all_acts[i:i + batch_size].to(device)
+            ablated = ablate_feature(batch, f, layer)
+            def _hook(*_, _a=ablated):
+                return _a
+            with torch.no_grad():
+                logits = model.run_with_hooks(
+                    torch.zeros(batch.shape[0], *img_shape, device=device),
+                    fwd_hooks=[(hook_key, _hook)],
+                )
+            ablated_diffs.append(
+                (logits[:, 0, flamingo_idx] - logits[:, 0, spoonbill_idx]).cpu()
+            )
+        ablated_diffs  = torch.cat(ablated_diffs)
+        importance[f] = (baseline_diffs - ablated_diffs).mean()
+
+    return importance
+
+
+def get_top_causal_features(
+    importance: torch.Tensor,
+    layer: int,
+    percentile: int | None = None,
+) -> list[int]:
+    """Return feature indices above the importance_percentile threshold.
+
+    Percentile is computed over non-zero entries only (features that were
+    ablated in Pass 2). Features not in grad_top_k have importance == 0
+    and are always excluded.
+    """
+    cfg = get_config()
+    pct = percentile if percentile is not None else cfg.causal.importance_percentile
+
+    nonzero_mask = importance.abs() > 0
+    if not nonzero_mask.any():
+        return []
+
+    threshold = torch.quantile(importance.abs()[nonzero_mask], pct / 100.0)
+    return (importance.abs() >= threshold).nonzero(as_tuple=True)[0].tolist()
+
+
 # TODO (Person B, Week 2 Days 10–12):
 #   1. Read CaFE paper (arXiv:2509.00749) before implementing.
-#   2. Implement cafe_sanity_check().
-#   3. Run on top 10 causally important features from Person A's output.
-#   4. Report agreement rate; flag features where activation != gradient
-#      location for discussion in the report.
+#   2. Implement cafe_sanity_check() below.
+#      Key constraint: gradient computation requires a fresh forward pass from
+#      pixel inputs with requires_grad=True — cached activations won't work.
+#   3. Run on top 10 features from compute_feature_importance output.
+#   4. Report agreement rate; flag features where locations disagree.
+
+def cafe_sanity_check(layer, feature_idx, activations, image_paths, model):
+    raise NotImplementedError("cafe_sanity_check — implement in Week 2 (Person B)")

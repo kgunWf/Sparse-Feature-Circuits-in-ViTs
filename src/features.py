@@ -662,7 +662,7 @@ def crop_patch_images(
 def crop_clip_images(
     patches: list[dict],
     clip_image_size: int = 224,
-    context_size: int = 96,
+    context_size: int | None = None,
 ) -> list[Image.Image]:
     """Return crops centered on each patch token, sized for CLIP input.
 
@@ -671,9 +671,9 @@ def crop_clip_images(
     (224) — passing 224 would always return the full image because the crop
     window can't be centered when it equals the image size.
 
-    Default ``context_size=96`` gives a ~6×6 patch neighbourhood (each patch
-    is 16 px), which is large enough for CLIP to read texture/colour/shape
-    without including irrelevant scene background.
+    Defaults to ``features.clip_context_size`` from config (96 px), giving a
+    ~6×6 patch neighbourhood (each patch is 16 px) — large enough for CLIP to
+    read texture/colour/shape without including irrelevant scene background.
 
     Why this matters: if context_size == image_size, _centered_square_box
     clamps both x0 and y0 to 0, so every crop is (0,0,224,224) — the full
@@ -681,6 +681,8 @@ def crop_clip_images(
     activated patch region.
     """
     cfg = get_config()
+    if context_size is None:
+        context_size = cfg.features.clip_context_size
     # Guard: context_size must be strictly less than image_size
     context_size = min(context_size, cfg.model.image_size - cfg.model.patch_size)
     crops: list[Image.Image] = []
