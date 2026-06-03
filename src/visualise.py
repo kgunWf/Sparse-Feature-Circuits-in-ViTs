@@ -73,6 +73,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -316,7 +317,59 @@ def plot_ablation_ranking(
 # --- Week 3 stubs (implement once circuit format confirmed with Person A) ---
 
 def plot_cafe_comparison(cafe_results, feature_idx, save_path=None):
-    raise NotImplementedError("plot_cafe_comparison — implement in Week 2 (Person B)")
+    """Show activation patch vs. CaFE ERF heatmap for one feature."""
+    cfg = get_config()
+    results = cafe_results.get("results", [])[:3]
+    if not results:
+        fig, ax = plt.subplots(figsize=(4, 2), dpi=_FIG_DPI)
+        ax.text(0.5, 0.5, f"No CaFE results for feature {feature_idx}", ha="center", va="center")
+        ax.axis("off")
+        return _save(fig, save_path)
+
+    ps = cfg.model.patch_size
+    img_size = cfg.model.image_size
+    fig, axes = plt.subplots(len(results), 2, figsize=(7, 3.2 * len(results)), dpi=_FIG_DPI)
+    axes = np.atleast_2d(axes)
+
+    for row, result in enumerate(results):
+        with Image.open(result["image_path"]) as img:
+            img = img.convert("RGB").resize((img_size, img_size))
+
+        act_row, act_col = result["activation_location"]
+        erf_row, erf_col = result.get("erf_location", result.get("gradient_location"))
+        erf_scores = np.asarray(result["erf_scores"], dtype=float)
+
+        axes[row, 0].imshow(img)
+        axes[row, 0].add_patch(Rectangle(
+            (act_col * ps, act_row * ps), ps, ps,
+            fill=False, edgecolor="#e53935", linewidth=2,
+        ))
+        axes[row, 0].set_title(f"Activation patch ({act_row}, {act_col})", fontsize=10)
+
+        axes[row, 1].imshow(img)
+        axes[row, 1].imshow(
+            erf_scores,
+            cmap="magma",
+            alpha=0.55,
+            extent=(0, img_size, img_size, 0),
+            interpolation="nearest",
+        )
+        axes[row, 1].add_patch(Rectangle(
+            (erf_col * ps, erf_row * ps), ps, ps,
+            fill=False, edgecolor="#00e5ff", linewidth=2,
+        ))
+        axes[row, 1].set_title(f"CaFE ERF patch ({erf_row}, {erf_col})", fontsize=10)
+
+        for ax in axes[row]:
+            ax.axis("off")
+
+    fig.suptitle(
+        f"Feature {feature_idx} CaFE agreement = {cafe_results['agreement_rate']:.2f}",
+        fontsize=12,
+        fontweight="bold",
+    )
+    fig.tight_layout()
+    return _save(fig, save_path)
 
 
 def plot_circuit(circuit, save_path=None):
