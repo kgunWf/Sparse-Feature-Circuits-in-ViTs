@@ -129,7 +129,7 @@ This is notebook-level logic (not in `features.py`) because it depends on the lo
 - If running locally just to verify the loop, temporarily set `cfg.causal.grad_top_k`
   to 20-50, then restore 200 before reporting final numbers.
 - CaFE is a Week 2 sanity check, not a full reproduction of Han et al.'s AttnLRP-based
-  CaFE pipeline. Report it as input-gradient CaFE-style ERF validation.
+  CaFE pipeline. Report it as input-gradient CaFE-style ERF validation. We implement the CaFE sanity check using input-gradient attribution as a lightweight ERF proxy. The full AttnLRP backend used in Han et al. is left for future work because it requires transformer-specific relevance propagation through attention, residual, MLP, and normalization paths.
 
 ---
 
