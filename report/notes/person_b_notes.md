@@ -89,9 +89,47 @@ This is notebook-level logic (not in `features.py`) because it depends on the lo
 
 ### Decisions
 
+- [x] Reused Person A's two-pass ablation loop
+      implementation. Notebook 03 now iterates over `cfg.sae.target_layers`
+      (`[4, 6, 9]`) and calls `compute_feature_importance()` once per layer.
+- [x] Store per-layer artifacts under `outputs/features/`:
+      `importance_layer{N}.pt` for dense importance tensors and
+      `importance_ranking_layer{N}.json` for reviewable sorted rankings.
+- [x] Keep `importance` and `top_features` as backwards-compatible aliases for
+      `cfg.sae.primary_layer` so downstream primary-layer CaFE/circuit cells still run.
+- [x] CaFE sanity check follows the core paper idea: explain a specific SAE feature
+      activation at a specific patch token by attributing that scalar back to input
+      patches. For Week 2, the backend is input gradients rather than full AttnLRP.
+- [x] CaFE uses fresh image forward passes with `pixels.requires_grad_(True)`.
+      Cached residual activations are only used to select the top activation events;
+      they cannot provide pixel-level attribution.
+- [x] CaFE results are saved per feature as JSON in `outputs/features/cafe/`, and
+      activation-vs-ERF comparison figures are saved in `report/figures/`.
+
 ### Findings
 
+- Notebook 03 now extracts residual-stream activations for all target SAE layers in
+  one pass per image, storing `act_flamingo_by_layer[layer]` and
+  `act_spoonbill_by_layer[layer]`.
+- The ablation-ranking cell now produces one plot per layer:
+  `ablation_ranking_layer4.png`, `ablation_ranking_layer6.png`, and
+  `ablation_ranking_layer9.png`.
+- `cafe_sanity_check()` now returns activation locations, ERF/gradient locations,
+  per-example ERF heatmaps, agreement rate, image paths, and detailed per-example rows.
+- `plot_cafe_comparison()` overlays the CaFE ERF heatmap on the image and marks:
+  red = max activation patch, cyan = max ERF patch.
+- Local smoke checks passed: `src/causal.py` and `src/visualise.py` compile,
+  notebook code cells parse, and the CaFE plotting path saves a PNG.
+
 ### Blockers
+
+- Full exact ablation for layers 4 and 6 is still compute-heavy on the MacBook Air M2.
+  The code is ready, but the full `grad_top_k=200` run should ideally be done on an
+  A100/Colab runtime or overnight with thermal throttling expected.
+- If running locally just to verify the loop, temporarily set `cfg.causal.grad_top_k`
+  to 20-50, then restore 200 before reporting final numbers.
+- CaFE is a Week 2 sanity check, not a full reproduction of Han et al.'s AttnLRP-based
+  CaFE pipeline. Report it as input-gradient CaFE-style ERF validation.
 
 ---
 
