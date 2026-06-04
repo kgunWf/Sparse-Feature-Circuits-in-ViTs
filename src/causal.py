@@ -46,9 +46,9 @@ cafe_sanity_check(layer, feature_idx, activations,
     Steps:
         1. Encode activations → SAE feature map (n, seq_len).
         2. Per image: find patch token with max activation → activation location.
-        3. Per image: compute gradient of feature activation (summed over tokens)
-           w.r.t. input pixels via torch.autograd. Map gradient magnitudes to
-           patch grid → gradient location.
+        3. Per image: compute gradient of the selected token's feature
+           activation w.r.t. input pixels via torch.autograd. Map gradient
+           magnitudes to the patch grid → ERF location.
         4. Spatial agreement rate over top-k images.
 
     Returns dict:
@@ -77,7 +77,7 @@ except ImportError:
         return iterable
 
 from src.config import get_config
-from src.sae import encode, decode, ablate_feature
+from src.sae import encode, decode, ablate_feature, get_sae
 
 
 def compute_feature_importance(
@@ -206,13 +206,102 @@ def get_top_causal_features(
     return (importance.abs() >= threshold).nonzero(as_tuple=True)[0].tolist()
 
 
-# TODO (Person B, Week 2 Days 10–12):
-#   1. Read CaFE paper (arXiv:2509.00749) before implementing.
-#   2. Implement cafe_sanity_check() below.
-#      Key constraint: gradient computation requires a fresh forward pass from
-#      pixel inputs with requires_grad=True — cached activations won't work.
-#   3. Run on top 10 features from compute_feature_importance output.
-#   4. Report agreement rate; flag features where locations disagree.
+def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k: int = 10):
+    """CaFE-style ERF check for the top activations of one SAE feature.
 
-def cafe_sanity_check(layer, feature_idx, activations, image_paths, model):
-    raise NotImplementedError("cafe_sanity_check — implement in Week 2 (Person B)")
+    CaFE treats each feature activation at a specific token as the target and
+    attributes that scalar back to input patches.  We use input gradients as the
+    practical attribution backend here; AttnLRP/IG can replace this later.
+    """
+    from src.model import preprocess_image
+
+    cfg = get_config()
+    device = next(model.parameters()).device
+    hook_key = f"blocks.{layer}.hook_resid_post"
+    patch_size = cfg.model.patch_size
+    grid_size = cfg.model.image_size // patch_size
+    patch_count = grid_size * grid_size
+    batch_size = cfg.causal.logit_diff_batch_size
+    image_paths = list(image_paths)
+
+    if activations.shape[0] != len(image_paths):
+        raise ValueError("activations and image_paths must have the same image count")
+    if top_k <= 0:
+        return {
+            "activation_locations": [],
+            "erf_locations": [],
+            "gradient_locations": [],
+            "erf_scores": [],
+            "agreement_rate": 0.0,
+            "example_images": [],
+            "attribution_method": "input_gradient",
+            "results": [],
+        }
+
+    peaks = []
+    for start in range(0, activations.shape[0], batch_size):
+        batch = activations[start:start + batch_size].to(device)
+        with torch.no_grad():
+            feature_map = encode(batch, layer)[:, 1:1 + patch_count, feature_idx].detach().cpu()
+        values, positions = feature_map.max(dim=1)
+        for offset, (value, position) in enumerate(zip(values, positions)):
+            token_offset = int(position)
+            row, col = divmod(token_offset, grid_size)
+            peaks.append((float(value), start + offset, 1 + token_offset, row, col))
+
+    selected = sorted(peaks, reverse=True)[:min(top_k, len(peaks))]
+    sae = get_sae(layer)
+    params = list(model.parameters()) + list(sae.parameters())
+    old_requires_grad = [p.requires_grad for p in params]
+    for p in params:
+        p.requires_grad_(False)
+
+    results = []
+    try:
+        for activation_value, image_idx, token_idx, act_row, act_col in tqdm(selected, desc="CaFE"):
+            pixels = preprocess_image(image_paths[image_idx]).to(device)
+            pixels.requires_grad_(True)
+            objective = None
+
+            def _hook(resid, *_, **__):
+                nonlocal objective
+                feats = encode(resid, layer)
+                objective = feats[:, token_idx, feature_idx].sum()
+                return resid
+
+            model.run_with_hooks(pixels, fwd_hooks=[(hook_key, _hook)])
+            if objective is None:
+                raise RuntimeError(f"Hook {hook_key} did not run")
+            objective.backward()
+
+            saliency = pixels.grad.detach().abs().sum(dim=1)[0].float().cpu()
+            patch_scores = saliency.unfold(0, patch_size, patch_size).unfold(1, patch_size, patch_size)
+            patch_scores = patch_scores.mean(dim=(-1, -2))
+            grad_row, grad_col = divmod(int(patch_scores.argmax()), grid_size)
+            results.append({
+                "image_path": image_paths[image_idx],
+                "image_idx": image_idx,
+                "token_idx": token_idx,
+                "activation_location": (act_row, act_col),
+                "erf_location": (grad_row, grad_col),
+                "gradient_location": (grad_row, grad_col),
+                "activation_value": activation_value,
+                "gradient_value": float(patch_scores[grad_row, grad_col]),
+                "erf_scores": patch_scores.tolist(),
+                "matches": (act_row, act_col) == (grad_row, grad_col),
+            })
+    finally:
+        for p, requires_grad in zip(params, old_requires_grad):
+            p.requires_grad_(requires_grad)
+
+    matches = [r["matches"] for r in results]
+    return {
+        "activation_locations": [r["activation_location"] for r in results],
+        "erf_locations": [r["erf_location"] for r in results],
+        "gradient_locations": [r["gradient_location"] for r in results],
+        "erf_scores": [r["erf_scores"] for r in results],
+        "agreement_rate": sum(matches) / len(matches) if matches else 0.0,
+        "example_images": [r["image_path"] for r in results],
+        "attribution_method": "input_gradient",
+        "results": results,
+    }
