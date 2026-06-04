@@ -120,6 +120,16 @@ This is notebook-level logic (not in `features.py`) because it depends on the lo
   red = max activation patch, cyan = max ERF patch.
 - Local smoke checks passed: `src/causal.py` and `src/visualise.py` compile,
   notebook code cells parse, and the CaFE plotting path saves a PNG.
+- CaFE outputs are present under `outputs/features/cafe/` for 10 top
+  layer-9 features.
+- Agreement was very high: 9/10 features had `agreement_rate = 1.00`; feature
+  33120 had `agreement_rate = 0.90`.
+- The only mismatch was feature 33120 on `flamingo_047.JPEG`: activation patch
+  `(5, 10)`, ERF patch `(6, 10)`. Visually this is one patch lower on the same
+  flamingo body/tail region, not a strong non-local context dependency.
+- Interpretation for report: the inspected top layer-9 causal features are mostly
+  spatially localized under input-gradient CaFE. We do not see strong evidence of
+  hidden non-local causal drivers in these top features.
 
 ### Blockers
 
@@ -129,7 +139,9 @@ This is notebook-level logic (not in `features.py`) because it depends on the lo
 - If running locally just to verify the loop, temporarily set `cfg.causal.grad_top_k`
   to 20-50, then restore 200 before reporting final numbers.
 - CaFE is a Week 2 sanity check, not a full reproduction of Han et al.'s AttnLRP-based
-  CaFE pipeline. Report it as input-gradient CaFE-style ERF validation. We implement the CaFE sanity check using input-gradient attribution as a lightweight ERF proxy. The full AttnLRP backend used in Han et al. is left for future work because it requires transformer-specific relevance propagation through attention, residual, MLP, and normalization paths.
+  CaFE pipeline. Report it as input-gradient CaFE-style ERF validation. The full
+  AttnLRP backend is left for future work because it requires transformer-specific
+  relevance propagation through attention, residual, MLP, and normalization paths.
 
 ---
 
