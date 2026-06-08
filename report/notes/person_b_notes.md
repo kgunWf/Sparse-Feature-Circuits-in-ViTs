@@ -96,7 +96,7 @@ This is notebook-level logic (not in `features.py`) because it depends on the lo
       `importance_layer{N}.pt` for dense importance tensors and
       `importance_ranking_layer{N}.json` for reviewable sorted rankings.
 - [x] Keep `importance` and `top_features` as backwards-compatible aliases for
-      `cfg.sae.primary_layer` so downstream primary-layer CaFE/circuit cells still run.
+      `cfg.sae.primary_layer` so downstream primary-layer CaFE cells still run.
 - [x] CaFE sanity check follows the core paper idea: explain a specific SAE feature
       activation at a specific patch token by attributing that scalar back to input
       patches. For Week 2, the backend is input gradients rather than full AttnLRP.

@@ -17,7 +17,6 @@ USAGE
     cfg = get_config()
     cfg.model.name          # "facebook/dino-vitb16"
     cfg.sae.primary_layer   # 9
-    cfg.circuit.layer_pairs # [[4, 6], [6, 9]]
 
 DEPENDENCIES: pip install pyyaml
 """

@@ -49,13 +49,3 @@ Implemented:
 ### Findings
 
 ### Blockers
-
----
-
-## Week 3 — Faithfulness eval + gap analysis
-
-### Decisions
-
-### Findings
-
-### Blockers
