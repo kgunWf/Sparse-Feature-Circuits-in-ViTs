@@ -206,12 +206,14 @@ def get_top_causal_features(
     return (importance.abs() >= threshold).nonzero(as_tuple=True)[0].tolist()
 
 
-def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k: int = 10):
+def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k: int = 10,
+                      attribution_method: str = "gradient", ig_steps: int = 16):
     """CaFE-style ERF check for the top activations of one SAE feature.
 
     CaFE treats each feature activation at a specific token as the target and
-    attributes that scalar back to input patches.  We use input gradients as the
-    practical attribution backend here; AttnLRP/IG can replace this later.
+    attributes that scalar back to input patches.  By default we use vanilla
+    input gradients, with the selected token's residual skip detached at the
+    target layer so the ERF is not just the activated patch's identity path.
     """
     from src.model import preprocess_image
 
@@ -226,6 +228,17 @@ def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k
 
     if activations.shape[0] != len(image_paths):
         raise ValueError("activations and image_paths must have the same image count")
+    method = attribution_method.lower()
+    if method in {"gradient", "gradients", "input_gradient", "vanilla_gradient"}:
+        method = "gradient"
+    elif method in {"ig", "integrated_gradient", "integrated_gradients"}:
+        method = "integrated_gradients"
+        if ig_steps <= 0:
+            raise ValueError("ig_steps must be positive")
+    else:
+        raise ValueError("attribution_method must be 'gradient' or 'integrated_gradients'")
+    method_label = "integrated_gradients" if method == "integrated_gradients" else "vanilla_gradient"
+
     if top_k <= 0:
         return {
             "activation_locations": [],
@@ -234,7 +247,7 @@ def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k
             "erf_scores": [],
             "agreement_rate": 0.0,
             "example_images": [],
-            "attribution_method": "input_gradient",
+            "attribution_method": method_label,
             "results": [],
         }
 
@@ -259,22 +272,53 @@ def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k
     results = []
     try:
         for activation_value, image_idx, token_idx, act_row, act_col in tqdm(selected, desc="CaFE"):
-            pixels = preprocess_image(image_paths[image_idx]).to(device)
-            pixels.requires_grad_(True)
-            objective = None
+            pixels = preprocess_image(image_paths[image_idx]).to(device).detach()
 
-            def _hook(resid, *_, **__):
-                nonlocal objective
-                feats = encode(resid, layer)
-                objective = feats[:, token_idx, feature_idx].sum()
-                return resid
+            def _input_grad(inputs):
+                inputs = inputs.detach().requires_grad_(True)
+                resid_pre = None
+                objective = None
 
-            model.run_with_hooks(pixels, fwd_hooks=[(hook_key, _hook)])
-            if objective is None:
-                raise RuntimeError(f"Hook {hook_key} did not run")
-            objective.backward()
+                def _pre_hook(resid, *_, **__):
+                    nonlocal resid_pre
+                    resid_pre = resid
+                    return resid
 
-            saliency = pixels.grad.detach().abs().sum(dim=1)[0].float().cpu()
+                def _post_hook(resid, *_, **__):
+                    nonlocal objective
+                    if resid_pre is None:
+                        raise RuntimeError(f"Hook {hook_key.replace('post', 'pre')} did not run")
+                    target_resid = resid.clone()
+                    target_resid[:, token_idx] = (
+                        resid[:, token_idx]
+                        - resid_pre[:, token_idx]
+                        + resid_pre[:, token_idx].detach()
+                    )
+                    feats = encode(target_resid, layer)
+                    objective = feats[:, token_idx, feature_idx].sum()
+                    return resid
+
+                model.run_with_hooks(
+                    inputs,
+                    fwd_hooks=[
+                        (f"blocks.{layer}.hook_resid_pre", _pre_hook),
+                        (hook_key, _post_hook),
+                    ],
+                )
+                if objective is None:
+                    raise RuntimeError(f"Hook {hook_key} did not run")
+                return torch.autograd.grad(objective, inputs)[0]
+
+            if method == "integrated_gradients":
+                baseline = torch.zeros_like(pixels)
+                total_grad = torch.zeros_like(pixels)
+                for alpha in torch.linspace(0, 1, ig_steps + 1, device=device, dtype=pixels.dtype)[1:]:
+                    total_grad += _input_grad(baseline + alpha * (pixels - baseline))
+                saliency = ((pixels - baseline) * total_grad / ig_steps).detach().abs().sum(dim=1)[0]
+            else:
+                saliency = _input_grad(pixels).detach().abs().sum(dim=1)[0]
+
+            saliency = saliency.float().cpu()
             patch_scores = saliency.unfold(0, patch_size, patch_size).unfold(1, patch_size, patch_size)
             patch_scores = patch_scores.mean(dim=(-1, -2))
             grad_row, grad_col = divmod(int(patch_scores.argmax()), grid_size)
@@ -302,6 +346,12 @@ def cafe_sanity_check(layer, feature_idx, activations, image_paths, model, top_k
         "erf_scores": [r["erf_scores"] for r in results],
         "agreement_rate": sum(matches) / len(matches) if matches else 0.0,
         "example_images": [r["image_path"] for r in results],
-        "attribution_method": "input_gradient",
+        "attribution_method": method_label,
+        "ig_steps": ig_steps if method == "integrated_gradients" else None,
         "results": results,
     }
+
+
+def cafe_integrated_gradients_check(*args, **kwargs):
+    kwargs["attribution_method"] = "integrated_gradients"
+    return cafe_sanity_check(*args, **kwargs)
