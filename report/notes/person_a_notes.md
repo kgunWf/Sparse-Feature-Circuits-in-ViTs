@@ -173,7 +173,7 @@ Commit updates regularly so the team can follow your progress.
   - 200 candidates ablated; max |importance| = 0.3780.
   - Top-5 features: 17825 (0.378), 32842 (0.325), 30072 (0.266), 40410 (0.258), 49054 (0.232).
   - 40 features pass the 80th-percentile cut → `top_features` for the ablation-ranking plot
-    and downstream CaFE / circuit work.
+    and downstream CaFE work.
   - Result is cached; re-running cell 4 loads from disk instead of recomputing. **Delete the
     `.pt` if the importance code changes**, or the stale cache is silently reused.
 
@@ -186,13 +186,3 @@ Commit updates regularly so the team can follow your progress.
 - **Still running on DINO v1 (patch16, 197 tokens), not DINOv2-reg.** Carried over from Week 1
   — all causal results above are for the DINO v1 stand-in. If the group switches models, the
   importance ranking must be recomputed against the new SAEs.
-
----
-
-## Week 3 — Circuit construction
-
-### Decisions
-
-### Findings
-
-### Blockers

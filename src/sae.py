@@ -2,8 +2,8 @@
 sae.py  —  Owner: Person A  —  Week 1
 
 PURPOSE: Expose encode / decode / ablate as clean primitives.
-causal.py and circuits.py call these — never load SAEs directly elsewhere.
-Keep focused on single-sample ops; loops belong in causal.py / circuits.py.
+causal.py calls these — never load SAEs directly elsewhere.
+Keep focused on single-sample ops; loops belong in causal.py.
 
 WHAT TO IMPLEMENT
 -----------------

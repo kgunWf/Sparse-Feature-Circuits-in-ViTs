@@ -43,26 +43,10 @@ plot_cafe_comparison(cafe_results, feature_idx,
         Right: image with gradient attribution heatmap
     Used to illustrate the CaFE sanity check.
 
-plot_circuit(circuit, save_path=None) -> Figure
-    Directed graph visualisation of the sparse feature circuit.
-    Nodes: positioned by layer (x-axis) and importance (y-axis).
-    Node color: concept category.
-    Node label: CLIP concept string (short).
-    Edge width: proportional to effect_size.
-    Use networkx + matplotlib. Keep it readable — truncate long labels.
-
-    Read circuits.py for the node attribute spec (feature_idx, layer,
-    label) before implementing.
-
 Implementation notes
 --------------------
 - Use seaborn style for clean report-quality figures.
 - Set figure DPI to 150 for report figures (use cfg or a local constant).
-- For plot_circuit: if the graph has > 30 nodes, consider a hierarchical
-  layout (nodes arranged in columns by layer) rather than spring layout,
-  which becomes unreadable at that scale.
-- Coordinate with Person A on node attribute names from circuits.py
-  before implementing plot_circuit.
 
 Depends on: src/config.py
 Used by:    all notebooks
@@ -314,8 +298,6 @@ def plot_ablation_ranking(
     return _save(fig, save_path)
 
 
-# --- Week 3 stubs (implement once circuit format confirmed with Person A) ---
-
 def plot_cafe_comparison(cafe_results, feature_idx, save_path=None):
     """Show activation patch vs. CaFE ERF heatmap for one feature."""
     cfg = get_config()
@@ -370,7 +352,3 @@ def plot_cafe_comparison(cafe_results, feature_idx, save_path=None):
     )
     fig.tight_layout()
     return _save(fig, save_path)
-
-
-def plot_circuit(circuit, save_path=None):
-    raise NotImplementedError("plot_circuit — implement in Week 3 after circuits.py spec confirmed")
