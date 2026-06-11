@@ -422,7 +422,7 @@ def precompute_patch_embeddings(
             )
         embs = F.normalize(embs.float(), dim=-1).cpu()
         for key, emb in zip(batch_keys, embs):
-            embeddings[key] = emb
+            embeddings[key] = emb.clone()  # clone breaks the shared batch storage (else pickle is batch_size× too large)
 
     print(f"Precomputed embeddings for {len(embeddings):,} unique patch crops")
     return embeddings

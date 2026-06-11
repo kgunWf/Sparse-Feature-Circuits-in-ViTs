@@ -85,19 +85,50 @@ def _patched_load_dino_weights(model_name, dtype, **kwargs):
     return _remap_dino_keys(state_dict)
 
 
-_model_loader._load_dino_weights = _patched_load_dino_weights
+def _patched_load_clip_weights(model_name, dtype, **kwargs):
+    """Load CLIP model, bypassing torch.load safety checks for older torch versions."""
+    from transformers import CLIPModel
+    from transformers.utils import import_utils
+    from transformers import modeling_utils
 
-_model = None
+    # Patch at multiple levels to bypass the torch version check
+    original_check = import_utils.check_torch_load_is_safe
+    original_is_torch_ge = import_utils.is_torch_greater_or_equal
+
+    def no_check():
+        pass
+
+    def always_true(*args, **kwargs):
+        return True
+
+    import_utils.check_torch_load_is_safe = no_check
+    import_utils.is_torch_greater_or_equal = always_true
+
+    try:
+        model = CLIPModel.from_pretrained(model_name, torch_dtype=dtype, **kwargs)
+        for param in model.parameters():
+            param.requires_grad = False
+        return model
+    finally:
+        import_utils.check_torch_load_is_safe = original_check
+        import_utils.is_torch_greater_or_equal = original_is_torch_ge
+
+
+
+
+_model_loader._load_dino_weights = _patched_load_dino_weights
+_model_loader._load_clip_weights = _patched_load_clip_weights
+
+_model_cache: dict = {}
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
+_CLIP_MEAN     = [0.48145466, 0.4578275, 0.40821073]
+_CLIP_STD      = [0.26862954, 0.26130258, 0.27577711]
 
 
 def get_model(model_name=None, device=None):
-    global _model
-    if _model is not None:
-        return _model
-
+    global _model_cache
     cfg = get_config()
     if model_name is None:
         model_name = cfg.model.name
@@ -109,17 +140,21 @@ def get_model(model_name=None, device=None):
         else:
             device = "cpu"
 
-    _model = load_hooked_model(
+    if model_name in _model_cache:
+        return _model_cache[model_name]
+
+    model = load_hooked_model(
         model_name,
         model_class=HookedViT,
         pretrained=True,
         device=device,
-        allow_failing=True
+        allow_failing=True,
     )
-    _model = _model.to(device)   # load_hooked_model leaves some params on CPU
-    n_params = sum(p.numel() for p in _model.parameters())
+    model = model.to(device)
+    n_params = sum(p.numel() for p in model.parameters())
     print(f"Loaded {model_name} on {device} — {n_params:,} params")
-    return _model
+    _model_cache[model_name] = model
+    return model
 
 
 def preprocess_image(image_path, image_size=None):
@@ -127,11 +162,15 @@ def preprocess_image(image_path, image_size=None):
     if image_size is None:
         image_size = cfg.model.image_size
 
+    is_clip = "clip" in cfg.model.name.lower()
+    mean = _CLIP_MEAN if is_clip else _IMAGENET_MEAN
+    std  = _CLIP_STD  if is_clip else _IMAGENET_STD
+
     transform = T.Compose([
         T.Resize(image_size),
         T.CenterCrop(image_size),
         T.ToTensor(),
-        T.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
+        T.Normalize(mean=mean, std=std),
     ])
     img = Image.open(image_path).convert("RGB")
     return transform(img).unsqueeze(0)

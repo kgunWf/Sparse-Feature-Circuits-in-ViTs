@@ -1,0 +1,52 @@
+# ============================================================
+# P3 — CLIP-B/32 configuration
+# Used alongside default.yaml (DINO). Load with:
+#   cfg = get_config("configs/clip_b32.yaml", reload=True)
+# ============================================================
+
+# --- Model ---
+model:
+  name: "openai/clip-vit-base-patch32"
+  image_size: 224
+  patch_size: 32
+  num_registers: 0
+
+# --- SAE ---
+sae:
+  source: "prisma"
+  target_layers: [4, 6, 9]
+  primary_layer: 9
+  l0_target: 2100
+  dead_feature_threshold: 0.01
+  # Prisma pre-trained CLIP-B/32 SAEs — hook_resid_post, vanilla ReLU, x64 expansion
+  # Source: https://github.com/Prisma-Multimodal/ViT-Prisma/blob/main/docs/sae_table.md
+  sae_repos:
+    4:  "Prisma-Multimodal/sparse-autoencoder-clip-b-32-sae-vanilla-x64-layer-4-hook_resid_post-l1-1e-05"
+    6:  "Prisma-Multimodal/sparse-autoencoder-clip-b-32-sae-vanilla-x64-layer-6-hook_resid_post-l1-1e-05"
+    9:  "Prisma-Multimodal/sparse-autoencoder-clip-b-32-sae-vanilla-x64-layer-9-hook_resid_post-l1-1e-05"
+
+# --- Dataset ---
+data:
+  imagenet_val_path: "data/imagenet_val"
+  cache_size: 5000
+
+# --- Features ---
+features:
+  top_k_patches: 20
+  clip_model: "openai/clip-vit-base-patch32"
+  clip_context_size: 48
+  monosemanticity_top_n: 50
+  min_activation_threshold: 0.5
+  ms_max_patches: 5
+
+# --- CaFE locality analysis ---
+cafe:
+  n_images: 20
+  ig_steps: 50
+  batch_size: 8
+
+# --- Outputs ---
+outputs:
+  cache_path: "outputs/caches/activations_clip.h5"
+  figures_path: "outputs/figures"
+  report_figures_path: "report/figures"
