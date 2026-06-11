@@ -9,25 +9,21 @@ Download the ImageNet 2012 validation split and place it here:
 ```
 data/
 └── imagenet_val/
-    ├── n02007558/     # flamingo (200 images minimum)
-    ├── n02006656/     # spoonbill (200 images minimum)
-    └── ...            # other classes for the 5,000-image cache
+    ├── n01440764/     # any class — 5,000 images sampled across classes
+    ├── n01443537/
+    └── ...
 ```
 
-Update `data.imagenet_val_path` in `configs/default.yaml` if you
-place the folder elsewhere.
+Update `data.imagenet_val_path` in `configs/default.yaml` if you place the folder elsewhere.
 
-## ImageNet class IDs
+## Usage
 
-| Class     | Synset ID |
-| --------- | --------- |
-| flamingo  | n02007558 |
-| spoonbill | n02006656 |
+The 5,000-image cache (`outputs/caches/activations.h5`) is built from a random
+sample across ImageNet val classes. No specific class is required. The same
+dataset is used for both DINO and CLIP pipelines.
 
 ## Download
 
 ImageNet requires registration at https://image-net.org.
 On Colab, mount your Google Drive and point the config path there.
 Do not re-download per session — store once in a shared Drive folder.
-
----

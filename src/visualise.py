@@ -352,3 +352,94 @@ def plot_cafe_comparison(cafe_results, feature_idx, save_path=None):
     )
     fig.tight_layout()
     return _save(fig, save_path)
+
+
+# ---------------------------------------------------------------------------
+# Stubs — Person B (D3/D5/D6)
+# ---------------------------------------------------------------------------
+
+def plot_locality_by_depth(agreement_by_layer: dict, model_label: str = "DINO",
+                           save_path=None):
+    """Fig 4 — CaFE locality agreement rate vs. relative depth (Run 1 index-based).
+
+    Args:
+        agreement_by_layer: {layer: agreement_rate} from Run 1 results.
+        model_label: 'DINO' or 'CLIP'.
+        save_path: optional path to save PNG.
+
+    Returns: matplotlib Figure.
+
+    TODO: Person B (D5).
+      - X-axis: relative depth (layer / total_layers * 100 → 33/50/75%).
+      - Y-axis: agreement rate (0–1).
+      - Plot both agreement_rate and top5_agreement_rate as separate lines.
+      - Include error bars if multiple features per layer allow it.
+    """
+    raise NotImplementedError("plot_locality_by_depth — Person B, D5 (Fig 4)")
+
+
+def plot_locality_by_category(category_agreements: dict, save_path=None):
+    """Fig 5 — DINO locality agreement rate by feature category, Run 2 MS-ranked.
+
+    Args:
+        category_agreements: {layer: {category: agreement_rate}} from Run 2 results.
+        save_path: optional path to save PNG.
+
+    Returns: matplotlib Figure.
+
+    TODO: Person B (D5).
+      - Grouped bar chart: x = category (6 groups), bars = layers 4/6/9.
+      - Use the same colour palette as plot_category_composition.
+      - This figure is exclusive to Run 2 (MS-ranked) — label as 'MS-ranked sample' in title.
+      - Note in caption: not numerically comparable to CaFE figures.
+    """
+    raise NotImplementedError("plot_locality_by_category — Person B, D5 (Fig 5)")
+
+
+def plot_locality_comparison(dino_rates: dict, clip_rates: dict,
+                              cafe_reference: dict = None, save_path=None):
+    """Fig 6 ★ — Main comparison: DINO Run 1 vs. CLIP Run 3 locality by relative depth.
+
+    Args:
+        dino_rates: {layer: agreement_rate} from DINO Run 1.
+        clip_rates: {layer: agreement_rate} from CLIP Run 3.
+        cafe_reference: optional {relative_depth: non_locality_rate} digitized from
+                        Han et al. Fig 5 — converted to agreement rates (1 - non_locality)
+                        before overlaying.
+        save_path: optional path to save PNG.
+
+    Returns: matplotlib Figure.
+
+    TODO: Person B (D6).
+      - X-axis: relative depth (33/50/75%).
+      - Y-axis: agreement rate (0–1). CaFE reports non-locality; convert to agreement.
+      - DINO = solid blue line, CLIP = solid orange line.
+      - CaFE CLIP-L/14 reference = dashed grey line labelled 'CaFE CLIP-L/14 (est. Fig 5)'.
+      - Caption must state: reference line digitized from Han et al. figure, not raw data.
+    """
+    raise NotImplementedError("plot_locality_comparison — Person B, D6 (Fig 6 ★)")
+
+
+def plot_ms_locality_scatter(ms_scores: dict, agreement_rates: dict,
+                              categories: dict = None, model_label: str = "DINO",
+                              save_path=None):
+    """Fig 8 — MS score vs. CaFE locality agreement rate, colored by feature category.
+
+    Args:
+        ms_scores:      {feat_idx: ms_score}
+        agreement_rates:{feat_idx: agreement_rate}
+        categories:     {feat_idx: category_str} — optional, colours points by category.
+        model_label:    'DINO' or 'CLIP'.
+        save_path: optional path to save PNG.
+
+    Returns: matplotlib Figure.
+
+    TODO: Person B (D6).
+      - Scatter plot: x = MS score, y = agreement rate.
+      - Colour points by category using the 6-category palette.
+      - Add Spearman ρ and p-value as annotation in the plot (use Person C's c05 results).
+      - Add a linear regression line.
+      - Uses Run 2 (DINO) and Run 3 (CLIP) for the category-coloured version;
+        also plot Run 1 DINO in a second panel for the symmetric comparison.
+    """
+    raise NotImplementedError("plot_ms_locality_scatter — Person B, D6 (Fig 8)")

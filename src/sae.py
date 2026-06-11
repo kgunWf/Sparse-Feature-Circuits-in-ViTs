@@ -51,8 +51,8 @@ from vit_prisma.sae.sae import SparseAutoencoder
 from src.config import get_config
 import src.config as _cfg_mod
 
-# --- cache: one SAE per layer, loaded on first request ---
-_sae_cache: dict[int, SparseAutoencoder] = {}
+# --- cache: keyed by (model_id, layer) to avoid DINO/CLIP collision ---
+_sae_cache: dict[tuple, SparseAutoencoder] = {}
 
 
 def _load_pretrained_sae(weights_path: Path, device: str) -> SparseAutoencoder:
@@ -80,19 +80,20 @@ def _load_pretrained_sae(weights_path: Path, device: str) -> SparseAutoencoder:
         torch.load = torch_load
 
 
-def _sae_dir(layer: int) -> Path:
+def _sae_dir(layer: int, model_id: str) -> Path:
     repo_root = _cfg_mod._DEFAULT_CONFIG.parent.parent
-    return repo_root / "outputs" / "saes" / f"layer_{layer}"
+    # Strip org prefix so "facebook/dino-vitb16" → "dino-vitb16"
+    short_id = model_id.split("/")[-1]
+    return repo_root / "outputs" / "saes" / short_id / f"layer_{layer}"
 
 
-def _sae_paths(layer: int) -> tuple[Path, Path]:
-    """Return (weights_path, config_path) for a given layer."""
-    sae_dir = _sae_dir(layer)
-    # HF repos use weights.pt + config.json; load_from_pretrained finds config.json automatically
+def _sae_paths(layer: int, model_id: str) -> tuple[Path, Path]:
+    """Return (weights_path, config_path) for a given layer and model."""
+    sae_dir = _sae_dir(layer, model_id)
     return sae_dir / "weights.pt", sae_dir / "config.json"
 
 
-def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
+def get_sae(layer: int = None, model_id: str = None, device: str = None) -> SparseAutoencoder:
     """
     Load and cache the pre-trained SAE for the given layer.
 
@@ -104,6 +105,8 @@ def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
     cfg = get_config()
     if layer is None:
         layer = cfg.sae.primary_layer
+    if model_id is None:
+        model_id = cfg.model.name
     if device is None:
         if torch.cuda.is_available():
             device = "cuda"
@@ -112,57 +115,59 @@ def get_sae(layer: int = None, device: str = None) -> SparseAutoencoder:
         else:
             device = "cpu"
 
-    if layer in _sae_cache:
-        return _sae_cache[layer]
+    cache_key = (model_id, layer)
+    if cache_key in _sae_cache:
+        return _sae_cache[cache_key]
 
-    weights_path, _ = _sae_paths(layer)
+    weights_path, _ = _sae_paths(layer, model_id)
     if not weights_path.exists():
         raise FileNotFoundError(
             f"SAE weights not found at {weights_path}\n"
             f"Download them first: python utils/download_saes.py --layers {layer}"
         )
 
-    # load_from_pretrained finds config.json in the same directory automatically
     sae = _load_pretrained_sae(weights_path, device)
     sae.to(device)
-    sae.device = device  # sync string attribute so encode/decode move tensors to the right place
+    sae.device = device
     sae.eval()
 
-    _sae_cache[layer] = sae
-    print(f"Loaded SAE layer {layer} — d_in={sae.d_in}, d_sae={sae.d_sae}")
+    _sae_cache[cache_key] = sae
+    short_id = model_id.split("/")[-1]
+    print(f"Loaded SAE {short_id} layer {layer} — d_in={sae.d_in}, d_sae={sae.d_sae}")
     return sae
 
 
-def encode(activations: torch.Tensor, layer: int = None) -> torch.Tensor:
+def encode(activations: torch.Tensor, layer: int = None, model_id: str = None) -> torch.Tensor:
     """
     Encode residual-stream activations into sparse SAE features.
 
     Args:
         activations: (batch, seq_len, d_model) on any device
         layer:       SAE layer; defaults to cfg.sae.primary_layer
+        model_id:    HF model name; defaults to cfg.model.name
 
     Returns:
         feature_acts: (batch, seq_len, d_sae) — sparse, non-negative
     """
-    sae = get_sae(layer)
+    sae = get_sae(layer, model_id)
     activations = activations.to(sae.device).to(sae.dtype)
-    # sae.encode() returns (sae_in, feature_acts) — we only need feature_acts
     _, feature_acts = sae.encode(activations)
     return feature_acts
 
 
-def decode(features: torch.Tensor, layer: int = None) -> torch.Tensor:
+def decode(features: torch.Tensor, layer: int = None, model_id: str = None) -> torch.Tensor:
     """
     Decode sparse SAE features back to the residual-stream space.
 
     Args:
         features: (batch, seq_len, d_sae)
         layer:    SAE layer; defaults to cfg.sae.primary_layer
+        model_id: HF model name; defaults to cfg.model.name
 
     Returns:
         reconstruction: (batch, seq_len, d_model)
     """
-    sae = get_sae(layer)
+    sae = get_sae(layer, model_id)
     features = features.to(sae.device).to(sae.dtype)
     return sae.decode(features)
 
@@ -171,62 +176,57 @@ def ablate_feature(
     activations: torch.Tensor,
     feature_idx: int,
     layer: int = None,
+    model_id: str = None,
 ) -> torch.Tensor:
     """
     Zero out one SAE feature and decode back to activation space.
-
-    The operation is:
-        features = encode(activations)
-        features[..., feature_idx] = 0
-        return decode(features)
 
     Args:
         activations: (batch, seq_len, d_model)
         feature_idx: index of the feature to ablate
         layer:       SAE layer; defaults to cfg.sae.primary_layer
+        model_id:    HF model name; defaults to cfg.model.name
 
     Returns:
         modified activations: (batch, seq_len, d_model)
     """
     original_device = activations.device
-    features = encode(activations, layer)
-    features = features.clone()          # don't mutate the encoded tensor in-place
+    features = encode(activations, layer, model_id)
+    features = features.clone()
     features[..., feature_idx] = 0.0
-    return decode(features, layer).to(original_device)
+    return decode(features, layer, model_id).to(original_device)
 
 
-def get_l0_sparsity(activations: torch.Tensor, layer: int = None) -> float:
+def get_l0_sparsity(activations: torch.Tensor, layer: int = None, model_id: str = None) -> float:
     """
     Mean number of active (non-zero) SAE features per token.
 
     Args:
         activations: (batch, seq_len, d_model)
         layer:       SAE layer; defaults to cfg.sae.primary_layer
+        model_id:    HF model name; defaults to cfg.model.name
 
     Returns:
         l0: float — target < cfg.sae.l0_target
     """
-    features = encode(activations, layer)
-    # features > 0 gives a bool tensor; sum over d_sae gives active count per token
+    features = encode(activations, layer, model_id)
     return (features > 0).float().sum(dim=-1).mean().item()
 
 
-def get_reconstruction_loss(activations: torch.Tensor, layer: int = None) -> float:
+def get_reconstruction_loss(activations: torch.Tensor, layer: int = None, model_id: str = None) -> float:
     """
     Normalised reconstruction loss: ||x - decode(encode(x))||^2 / ||x||^2.
-
-    Averaged over all tokens and batch elements.
 
     Args:
         activations: (batch, seq_len, d_model)
         layer:       SAE layer; defaults to cfg.sae.primary_layer
+        model_id:    HF model name; defaults to cfg.model.name
 
     Returns:
         loss: float — target < 0.05
     """
-    features = encode(activations, layer)
-    reconstruction = decode(features, layer)
-    # cast back to input dtype for comparison
+    features = encode(activations, layer, model_id)
+    reconstruction = decode(features, layer, model_id)
     activations = activations.to(reconstruction.dtype).to(reconstruction.device)
     numerator   = (activations - reconstruction).norm(dim=-1) ** 2
     denominator = activations.norm(dim=-1) ** 2
