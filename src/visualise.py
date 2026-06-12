@@ -1,5 +1,5 @@
 """
-visualise.py  [Owner: Person B — Week 2–3]
+visualise.py  [Owner: Person B — Week 2-3]
 ------------
 All plotting functions. Every figure in the report should be
 produced by a function in this file — no inline plotting in notebooks.
@@ -57,14 +57,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Patch, Rectangle
 import numpy as np
 from PIL import Image, ImageDraw
+from scipy.stats import spearmanr
 
 from src.config import get_config
 from src.features import crop_patch_images
 
 _FIG_DPI = 150
+_VIT_BASE_LAYERS = 12
 
 # Colour palette for the six annotation categories
 CATEGORY_COLORS: dict[str, str] = {
@@ -75,6 +77,26 @@ CATEGORY_COLORS: dict[str, str] = {
     "semantic": "#9c27b0",
     "unclear":  "#9e9e9e",
 }
+
+
+def _rate_summary(value, key: str = "agreement_rate") -> tuple[float, float | None]:
+    """Return mean and standard error from a scalar, sequence, or result mapping."""
+    if isinstance(value, dict):
+        value = value[key] if key in value else [
+            result[key] for result in value.values()
+            if isinstance(result, dict) and key in result
+        ]
+    values = np.asarray(value if np.iterable(value) else [value], dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return np.nan, None
+    error = values.std(ddof=1) / np.sqrt(len(values)) if len(values) > 1 else None
+    return float(values.mean()), error
+
+
+def _depths(layers) -> np.ndarray:
+    """Convert ViT-B layer numbers to relative depth percentages."""
+    return np.asarray(list(layers), dtype=float) / _VIT_BASE_LAYERS * 100
 
 
 def _save(fig: plt.Figure, save_path: str | None) -> plt.Figure:
@@ -369,13 +391,28 @@ def plot_locality_by_depth(agreement_by_layer: dict, model_label: str = "DINO",
 
     Returns: matplotlib Figure.
 
-    TODO: Person B (D5).
-      - X-axis: relative depth (layer / total_layers * 100 → 33/50/75%).
-      - Y-axis: agreement rate (0–1).
-      - Plot both agreement_rate and top5_agreement_rate as separate lines.
-      - Include error bars if multiple features per layer allow it.
+    Plots top-1 and top-5 agreement separately, with standard-error bars
+    when per-feature result dictionaries are provided.
     """
-    raise NotImplementedError("plot_locality_by_depth — Person B, D5 (Fig 4)")
+    layers = sorted(agreement_by_layer)
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=_FIG_DPI)
+        for key, label, style in (
+            ("agreement_rate", "Top-1 agreement", "o-"),
+            ("top5_agreement_rate", "Top-5 agreement", "s--"),
+        ):
+            summaries = [_rate_summary(agreement_by_layer[layer], key) for layer in layers]
+            values = np.array([mean for mean, _ in summaries])
+            if np.isfinite(values).any():
+                errors = [error or 0 for _, error in summaries]
+                ax.errorbar(_depths(layers), values, yerr=errors, fmt=style,
+                            capsize=3, linewidth=2, label=label)
+        ax.set(xlabel="Relative depth (%)", ylabel="CaFE agreement rate",
+               ylim=(0, 1.05), title=f"{model_label} feature locality by depth")
+        ax.set_xticks(_depths(layers), [f"{depth:.0f}%" for depth in _depths(layers)])
+        ax.legend()
+        fig.tight_layout()
+    return _save(fig, save_path)
 
 
 def plot_locality_by_category(category_agreements: dict, save_path=None):
@@ -387,13 +424,32 @@ def plot_locality_by_category(category_agreements: dict, save_path=None):
 
     Returns: matplotlib Figure.
 
-    TODO: Person B (D5).
-      - Grouped bar chart: x = category (6 groups), bars = layers 4/6/9.
-      - Use the same colour palette as plot_category_composition.
-      - This figure is exclusive to Run 2 (MS-ranked) — label as 'MS-ranked sample' in title.
-      - Note in caption: not numerically comparable to CaFE figures.
+    Categories use the shared palette; hatches distinguish layers.
     """
-    raise NotImplementedError("plot_locality_by_category — Person B, D5 (Fig 5)")
+    layers = sorted(category_agreements)
+    categories = list(CATEGORY_COLORS)
+    x = np.arange(len(categories))
+    width = 0.8 / len(layers)
+    hatches = ("", "//", "xx")
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(9, 4.5), dpi=_FIG_DPI)
+        for index, layer in enumerate(layers):
+            values = [_rate_summary(category_agreements[layer].get(cat, np.nan))[0]
+                      for cat in categories]
+            ax.bar(x + (index - (len(layers) - 1) / 2) * width, values, width,
+                   color=[CATEGORY_COLORS[cat] for cat in categories],
+                   hatch=hatches[index % len(hatches)], edgecolor="#555555",
+                   linewidth=0.5)
+        ax.set_xticks(x, categories)
+        ax.set(xlabel="Feature category", ylabel="CaFE agreement rate",
+               ylim=(0, 1.05), title="DINO locality by category (MS-ranked sample)")
+        ax.legend(handles=[Patch(facecolor="white", edgecolor="grey",
+                                hatch=hatches[i % len(hatches)], label=f"Layer {layer}")
+                           for i, layer in enumerate(layers)])
+        fig.text(0.5, 0.01, "MS-ranked sample; not directly comparable to index-based CaFE figures.",
+                 ha="center", fontsize=8, color="#555555")
+        fig.tight_layout(rect=(0, 0.04, 1, 1))
+    return _save(fig, save_path)
 
 
 def plot_locality_comparison(dino_rates: dict, clip_rates: dict,
@@ -410,14 +466,35 @@ def plot_locality_comparison(dino_rates: dict, clip_rates: dict,
 
     Returns: matplotlib Figure.
 
-    TODO: Person B (D6).
-      - X-axis: relative depth (33/50/75%).
-      - Y-axis: agreement rate (0–1). CaFE reports non-locality; convert to agreement.
-      - DINO = solid blue line, CLIP = solid orange line.
-      - CaFE CLIP-L/14 reference = dashed grey line labelled 'CaFE CLIP-L/14 (est. Fig 5)'.
-      - Caption must state: reference line digitized from Han et al. figure, not raw data.
+    CaFE reference values are non-locality rates and are converted to
+    agreement before plotting.
     """
-    raise NotImplementedError("plot_locality_comparison — Person B, D6 (Fig 6 ★)")
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(7, 4.5), dpi=_FIG_DPI)
+        for rates, label, color in (
+            (dino_rates, "DINO ViT-B/16", "#4a90d9"),
+            (clip_rates, "CLIP ViT-B/32", "#e07b39"),
+        ):
+            layers = sorted(rates)
+            values = [_rate_summary(rates[layer])[0] for layer in layers]
+            ax.plot(_depths(layers), values, "o-", color=color, linewidth=2, label=label)
+        if cafe_reference:
+            reference_keys = sorted(cafe_reference)
+            depths = np.asarray(reference_keys, dtype=float)
+            if depths.max() <= 1:
+                depths *= 100
+            ax.plot(depths, [1 - cafe_reference[depth] for depth in reference_keys], "--",
+                    color="#666666", linewidth=2,
+                    label="CaFE CLIP-L/14 (est. Fig 5)")
+            fig.text(0.5, 0.01, "Reference digitized from Han et al. Fig. 5; not raw data.",
+                     ha="center", fontsize=8, color="#555555")
+        ax.set(xlabel="Relative depth (%)", ylabel="CaFE agreement rate",
+               ylim=(0, 1.05), title="Feature locality across vision transformers")
+        model_depths = sorted(set(_depths(dino_rates)) | set(_depths(clip_rates)))
+        ax.set_xticks(model_depths, [f"{depth:.0f}%" for depth in model_depths])
+        ax.legend()
+        fig.tight_layout(rect=(0, 0.04 if cafe_reference else 0, 1, 1))
+    return _save(fig, save_path)
 
 
 def plot_ms_locality_scatter(ms_scores: dict, agreement_rates: dict,
@@ -434,12 +511,43 @@ def plot_ms_locality_scatter(ms_scores: dict, agreement_rates: dict,
 
     Returns: matplotlib Figure.
 
-    TODO: Person B (D6).
-      - Scatter plot: x = MS score, y = agreement rate.
-      - Colour points by category using the 6-category palette.
-      - Add Spearman ρ and p-value as annotation in the plot (use Person C's c05 results).
-      - Add a linear regression line.
-      - Uses Run 2 (DINO) and Run 3 (CLIP) for the category-coloured version;
-        also plot Run 1 DINO in a second panel for the symmetric comparison.
+    Computes Spearman statistics over finite overlapping features and adds
+    a least-squares trend line when the MS scores are non-constant.
     """
-    raise NotImplementedError("plot_ms_locality_scatter — Person B, D6 (Fig 8)")
+    feature_ids = [
+        feature_idx for feature_idx in sorted(ms_scores.keys() & agreement_rates.keys())
+        if np.isfinite(ms_scores[feature_idx]) and np.isfinite(agreement_rates[feature_idx])
+    ]
+    if not feature_ids:
+        raise ValueError("ms_scores and agreement_rates have no finite overlapping features")
+    x = np.array([ms_scores[feature_idx] for feature_idx in feature_ids], dtype=float)
+    y = np.array([agreement_rates[feature_idx] for feature_idx in feature_ids], dtype=float)
+    rho, pvalue = spearmanr(x, y)
+
+    with plt.style.context("seaborn-v0_8-whitegrid"):
+        fig, ax = plt.subplots(figsize=(7, 5), dpi=_FIG_DPI)
+        if categories:
+            category_names = [
+                categories.get(feature_idx, "unclear") for feature_idx in feature_ids
+            ]
+            category_names = [name if name in CATEGORY_COLORS else "unclear"
+                              for name in category_names]
+            for category in CATEGORY_COLORS:
+                mask = np.array([name == category for name in category_names])
+                if mask.any():
+                    ax.scatter(x[mask], y[mask], s=28, alpha=0.75,
+                               color=CATEGORY_COLORS[category], label=category)
+            ax.legend(fontsize=8, ncol=2)
+        else:
+            ax.scatter(x, y, s=28, alpha=0.75, color="#4a90d9")
+        if len(np.unique(x)) > 1:
+            slope, intercept = np.polyfit(x, y, 1)
+            line_x = np.linspace(x.min(), x.max(), 100)
+            ax.plot(line_x, slope * line_x + intercept, color="#333333", linewidth=1.5)
+        ax.text(0.03, 0.97, f"Spearman rho = {rho:.2f}\np = {pvalue:.2g}\nN = {len(x)}",
+                transform=ax.transAxes, va="top",
+                bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"})
+        ax.set(xlabel="Monosemanticity score", ylabel="CaFE agreement rate",
+               ylim=(0, 1.05), title=f"{model_label}: monosemanticity vs. locality")
+        fig.tight_layout()
+    return _save(fig, save_path)
